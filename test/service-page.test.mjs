@@ -108,11 +108,11 @@ test('received T3 response is not presented as validated operation success',asyn
 });
 
 test('product navigation preserves edits and graphs only actual aggregate data',async()=>{
- const s=setup({routes:{'/api/stats':{version:1,startedAt:Date.now(),retentionDays:90,timeZone:'Asia/Shanghai',days:[{date:'2026-11-13',accepted:3,completed:2,blocked:1,latencyCount:2,latencyMs:10000,runCompleted:1,runFailed:1}]}}});await s.run();s.get('serverName').value='unsaved';s.get('nav-stats').onclick();await new Promise(setImmediate);
+ const s=setup({routes:{'/api/stats':{version:1,startedAt:Date.parse('2026-11-13T02:00:00Z'),retentionDays:90,timeZone:'Asia/Shanghai',days:[{date:'2026-11-13',accepted:3,completed:2,blocked:1,latencyCount:2,latencyMs:10000,runCompleted:1,runFailed:1}]}}});await s.run();s.get('serverName').value='unsaved';s.get('nav-stats').onclick();await new Promise(setImmediate);
  assert.equal(s.get('view-stats').hidden,false);assert.equal(s.get('view-settings').hidden,true);assert.equal(s.get('stats-accepted').textContent,'3');assert.equal(s.get('stats-delivered').textContent,'2');assert.equal(s.get('stats-latency').textContent,'5.0 秒');assert.equal(s.get('trend-chart').children[0].tag,'svg');assert.equal(s.get('stats-table').children.length,1);s.get('nav-settings').onclick();assert.equal(s.get('serverName').value,'unsaved');
 });
 test('empty statistics remain explicit and unknown counters are never rendered',async()=>{
- const s=setup({routes:{'/api/stats':{version:1,startedAt:Date.now(),retentionDays:90,days:[]}}});await s.run();s.get('nav-stats').onclick();await new Promise(setImmediate);assert.equal(s.get('trend-empty').hidden,false);assert.equal(s.get('stats-accepted').textContent,'0');assert.equal(s.get('stats-latency').textContent,'—');assert.match(s.get('outcome-chart').children[0].textContent,/尚无/);
+ const s=setup({routes:{'/api/stats':{version:1,startedAt:Date.now(),retentionDays:90,days:[]}}});await s.run();s.get('nav-stats').onclick();await new Promise(setImmediate);assert.equal(s.get('trend-empty').hidden,false);assert.equal(s.get('stats-accepted').textContent,'—');assert.equal(s.get('stats-latency').textContent,'—');assert.match(s.get('outcome-chart').children[0].textContent,/尚无/);
 });
 test('MCP discovery selects only safe server name without mutating saved config',async()=>{
  const s=setup({routes:{'/api/mcp/servers':{servers:[{name:'t3-connected',suggested:true,token:'DO-NOT-SHOW'}]}}});await s.run();await s.get('discover-mcp').onclick();s.get('mcp-results').children[0].onclick();assert.equal(s.get('serverName').value,'t3-connected');assert.equal(s.saved,undefined);assert.ok(!s.get('mcp-results').children[0].children.some(c=>c.textContent.includes('DO-NOT-SHOW')));
@@ -196,4 +196,56 @@ test('loading states settle and motion remains CSP-safe with reduced-motion supp
  let resolve;const s=setup({routes:{'/api/stats':()=>new Promise(r=>resolve=r)}});await s.run();s.get('nav-stats').onclick();assert.equal(s.get('view-stats')['aria-busy'],'true');await new Promise(setImmediate);resolve({version:1,days:[],retentionDays:30,startedAt:Date.now()});await new Promise(setImmediate);assert.equal(s.get('view-stats')['aria-busy'],'false');assert.equal(s.get('trend-empty').hidden,false);
  const css=await readFile(new URL('../page/ui.css',import.meta.url),'utf8');assert.match(css,/prefers-reduced-motion:reduce/);assert.match(css,/chart-draw/);assert.match(css,/skeleton-pass/);assert.match(code,/pathLength:1/);
  const html=await readFile(new URL('../page/service.html',import.meta.url),'utf8');assert.match(html,/details class="delivery-diagnostics"/);assert.doesNotMatch(html,/<script>\s*\S|style="|target="_blank"/);
+});
+
+
+test('top-level tabs retain independent scroll positions through rapid switching',async()=>{
+ const s=setup({routes:{'/api/stats':{version:1,days:[]}}});await s.run();
+ s.get('view-settings').scrollTop=240;s.get('nav-overview').onclick();
+ assert.equal(s.get('view-overview').scrollTop,0);
+ s.get('view-overview').scrollTop=110;s.get('nav-stats').onclick();
+ s.get('view-stats').scrollTop=380;s.get('nav-settings').onclick();
+ assert.equal(s.get('view-settings').scrollTop,240);
+ for(let i=0;i<8;i++){s.get('nav-overview').onclick();s.get('nav-stats').onclick();s.get('nav-settings').onclick();}
+ assert.equal(s.get('view-overview').scrollTop,110);assert.equal(s.get('view-stats').scrollTop,380);assert.equal(s.get('view-settings').scrollTop,240);
+ for(const name of ['overview','stats','settings']){assert.equal(s.get('view-'+name).hidden,name!=='settings');assert.equal(s.get('nav-'+name)['aria-current'],name==='settings'?'page':'false');}
+ await new Promise(setImmediate);assert.equal(s.get('view-stats').hidden,true);
+});
+test('tab layout uses a keyboard-accessible stable scrollport and motion-free fallback',async()=>{
+ const html=await readFile(new URL('../page/service.html',import.meta.url),'utf8');
+ const css=await readFile(new URL('../page/ui.css',import.meta.url),'utf8');
+ assert.match(html,/<body class="service-shell">/);assert.match(html,/<div class="view-stack">/);
+ for(const n of ['overview','settings','stats'])assert.match(html,new RegExp('id="view-'+n+'" tabindex="0"'));
+ assert.match(css,/\.service-shell \.view-stack\{flex:1;min-height:0/);
+ assert.match(css,/scrollbar-gutter:stable/);assert.match(css,/@supports not \(scrollbar-gutter:stable\)/);
+ assert.match(css,/@keyframes page-fade-in\{from\{opacity:0\}to\{opacity:1\}\}/);
+ assert.match(css,/@media\(prefers-reduced-motion:reduce\)\{\.service-shell \.view-stack[^\n]+animation:none!important/);
+ assert.doesNotMatch(code,/window\.scrollTo|window\.scroll\(/);
+ // Existing wizard and picker focus/scroll targeting remain inside the settings scrollport.
+ assert.match(code,/scrollIntoView\?\.\(\{block:'start',behavior:'auto'\}\)/);
+});
+
+
+test('statistics exclude pre-start API zero-fill from charts, tables and totals',async()=>{
+ const data={version:1,startedAt:Date.parse('2026-11-12T16:30:00Z'),retentionDays:90,days:[{date:'2026-11-11',accepted:99},{date:'2026-11-12',accepted:0},{date:'2026-11-13',accepted:2,completed:1}]};
+ const s=setup({routes:{'/api/stats':data}});await s.run();s.get('range-30').onclick();await new Promise(setImmediate);
+ assert.equal(s.get('stats-table').children.length,1);assert.equal(s.get('stats-table').children[0].children[0].textContent,'2026-11-13（部分覆盖）');assert.equal(s.get('stats-accepted').textContent,'2');
+ assert.match(s.get('stats-coverage').textContent,/实际覆盖：2026-11-13/);assert.match(s.get('stats-coverage').textContent,/00:30:00.*部分覆盖/);assert.match(s.get('stats-coverage').textContent,/不按 0 计/);
+ const chart=JSON.stringify(s.get('trend-chart'),(k,v)=>k==='parent'?undefined:v);assert.doesNotMatch(chart,/11-11|11-12/);
+ assert.equal(data.days.length,3);assert.equal(data.days[0].accepted,99);
+});
+test('later covered zero days remain visible; unknown coverage cannot fabricate history',async()=>{
+ const data={version:1,startedAt:Date.parse('2026-11-10T04:00:00Z'),asOf:Date.parse('2026-11-14T00:00:00Z'),days:[{date:'2026-11-12',accepted:0},{date:'2026-11-13',accepted:0}]};
+ const s=setup({routes:{'/api/stats':data}});await s.run();s.get('nav-stats').onclick();await new Promise(setImmediate);
+ assert.equal(s.get('stats-table').children.length,2);assert.doesNotMatch(s.get('stats-coverage').textContent,/部分覆盖/);
+ data.startedAt=null;s.get('stats-refresh').onclick();await new Promise(setImmediate);assert.match(s.get('stats-notice').textContent,/缺少可信的统计开始时间/);
+});
+
+test('inactive legacy statistics never claim measured zeroes or a recording start',async()=>{
+ const s=setup({routes:{'/api/stats':{version:1,coverageEstablished:false,startedAt:null,days:[{date:'2026-11-13',accepted:0}]}}});await s.run();s.get('nav-stats').onclick();await new Promise(setImmediate);
+ assert.equal(s.get('stats-table').children.length,0);assert.equal(s.get('stats-accepted').textContent,'—');assert.equal(s.get('stats-coverage').textContent,'尚未开始统计');assert.equal(s.get('stats-notice').textContent,'');
+});
+test('today is marked partial even when recording began before this range',async()=>{
+ const s=setup({routes:{'/api/stats':{version:1,startedAt:Date.parse('2026-11-01T00:00:00Z'),asOf:Date.parse('2026-11-13T05:00:00Z'),days:[{date:'2026-11-12',accepted:0},{date:'2026-11-13',accepted:0}]}}});await s.run();s.get('nav-stats').onclick();await new Promise(setImmediate);
+ assert.equal(s.get('stats-accepted').textContent,'0');assert.match(s.get('stats-coverage').textContent,/今日尚未结束，部分覆盖/);assert.equal(s.get('stats-table').children[0].children[0].textContent,'2026-11-12');assert.equal(s.get('stats-table').children[1].children[0].textContent,'2026-11-13（部分覆盖）');
 });
