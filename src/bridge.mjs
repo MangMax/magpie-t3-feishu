@@ -1,10 +1,11 @@
 import { createHash } from 'node:crypto';
+import {ensureStats,addStat,finishStats,statsSummary} from './stats.mjs';
 export const requestId=id=>'magpie-feishu-'+createHash('sha256').update(id).digest('hex');
 export function chunks(text,size=3000){const points=Array.from(text);return Array.from({length:Math.ceil(points.length/size)},(_,i)=>points.slice(i*size,(i+1)*size).join(''));}
 export class Bridge {
   constructor({store,t3,channel,config,clock=Date.now}){Object.assign(this,{store,t3,channel,config,clock});this.running=false;this.busy=false;this.state={jobs:[],seen:{}};this.error=null;this.observed={accepted:0,unbound:0,duplicate:0,stale:0,invalid:0,notRunning:0,lastReceivedAt:null,lastDecision:null,t3:null};}
-  async start(){this.state=await this.store.read('state',{jobs:[],seen:{}});this.running=true;await this.channel.start(m=>this.accept(m));this.timer=setInterval(()=>this.tick().catch(()=>{}),3000);this.timer.unref?.();void this.tick().catch(()=>{});}
-  async save(){try{await this.store.write('state',this.state);}catch{this.running=false;this.error='本地状态保存失败；已停止桥接，避免重复执行。';throw new Error('State persistence failed');}}
+  async start(){this.state=await this.store.read('state',{jobs:[],seen:{}});ensureStats(this.state,this.clock());this.running=true;await this.channel.start(m=>this.accept(m));this.timer=setInterval(()=>this.tick().catch(()=>{}),3000);this.timer.unref?.();void this.tick().catch(()=>{});}
+  async save(){try{for(const job of this.state.jobs)finishStats(this.state,job,this.clock());await this.store.write('state',this.state);}catch{this.running=false;this.error='本地状态保存失败；已停止桥接，避免重复执行。';throw new Error('State persistence failed');}}
   async accept(m){
     this.observed.lastReceivedAt=this.clock();
     const decide=key=>{this.observed[key]++;this.observed.lastDecision=key;};
@@ -16,8 +17,8 @@ export class Bridge {
     if(!Number.isFinite(m.createdAt)||Math.abs(this.clock()-m.createdAt)>86400000){decide('stale');return;}
     if(this.state.seen[m.id]){decide('duplicate');return;}
     this.state.seen[m.id]=this.clock();
-    this.state.jobs.push({id:m.id,chatId:m.chatId,userId:m.userId,threadId:binding.threadId,environmentId:binding.environmentId,message:m.text,botId:this.config.appId,serverName:this.config.serverName,phase:'queued',createdAt:this.clock()});
-    await this.save();decide('accepted');
+    this.state.jobs.push({id:m.id,chatId:m.chatId,userId:m.userId,threadId:binding.threadId,environmentId:binding.environmentId,message:m.text,botId:this.config.appId,serverName:this.config.serverName,phase:'queued',statsVersion:1,createdAt:this.clock()});
+    addStat(this.state,'accepted',1,this.clock());await this.save();decide('accepted');
   }
   async tick(){
     if(this.busy||!this.running)return;this.busy=true;
@@ -56,7 +57,7 @@ export class Bridge {
     if(j.phase==='waiting'){
       const r=await this.callT3('wait','t3_thread_wait',this.args(j,{runId:j.runId,timeoutMs:1}));
       if(r.runId!==j.runId||r.timedOut||!['completed','failed','cancelled','interrupted','rolled_back'].includes(r.status))return;
-      j.phase='reading';j.cursor??=-1;j.parts=[];await this.save();
+      j.runOutcome=r.status;if(j.statsVersion===1&&!j.statsRunFinished){j.statsRunFinished=true;const key={completed:'runCompleted',failed:'runFailed',cancelled:'runCancelled',interrupted:'runInterrupted',rolled_back:'runRolledBack'}[r.status];if(key)addStat(this.state,key,1,this.clock());}j.phase='reading';j.cursor??=-1;j.parts=[];await this.save();
     }
     if(j.phase==='reading'){
       // Traverse fully, but never forward a different run or user/tool text.
@@ -80,11 +81,12 @@ export class Bridge {
         const i=j.outIndex;j.phase='sending';await this.save();
         // Persist intent first. Unknown API outcomes are NOT blindly retried after restart.
         let receipt;try{receipt=await this.channel.send(j.chatId,j.out[i],requestId(j.id)+':'+i);}catch{j.phase='blocked';j.reason='飞书发送结果未知；请在 T3 查看回复。';await this.save();return;}
-        j.receipts??=[];j.receipts.push(receipt);j.outIndex++;j.phase='delivering';await this.save();
+        j.receipts??=[];j.receipts.push(receipt);if(j.statsVersion===1)addStat(this.state,'replyParts',1,this.clock());j.outIndex++;j.phase='delivering';await this.save();
       }
       j.phase='done';delete j.parts;delete j.out;await this.save();
     }
   }
+  stats(range=30){return statsSummary(this.state,this.clock(),range);}
   status(){return {diagnostics:{...structuredClone(this.observed),channel:this.channel.diagnostics?.()||null},running:this.running,channelConnection:this.channel.status?.()||'unknown',error:this.error,pending:this.state.jobs.filter(j=>j.phase!=='done').map(j=>({id:j.id,threadId:j.threadId,phase:j.phase,reason:j.reason||null})),completed:this.state.jobs.filter(j=>j.phase==='done').length};}
   async stop(){this.running=false;clearInterval(this.timer);await this.channel.stop();while(this.busy)await new Promise(r=>setTimeout(r,50));await this.t3.close();}
 }

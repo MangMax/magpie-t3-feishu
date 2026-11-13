@@ -20,4 +20,15 @@ assert.equal((await call('/api/config',{authorization:'Bearer '+token,host:'evil
 assert.equal((await call('//[%')).status,400);
 const auth={authorization:'Bearer '+token,origin:'null'};const config=await call('/api/config',auth);assert.equal(config.status,200);assert.equal('appSecret' in JSON.parse(config.body),false);assert.equal(config.headers['access-control-allow-origin'],'null');
 const saved=await call('/api/config',{...auth,'content-type':'application/json'},'POST',JSON.stringify({enabled:false,appId:'test',appSecret:'DO_NOT_LEAK',serverName:'t3',bindings:[]}));assert.equal(saved.status,200);assert.equal((await call('/api/config',auth)).body.includes('DO_NOT_LEAK'),false);
+const mismatch=await call('/api/config',{...auth,'content-type':'application/json'},'POST',JSON.stringify({enabled:false,appId:'changed',appSecret:'',serverName:'t3',bindings:[]}));assert.equal(mismatch.status,400);assert.equal(JSON.parse((await call('/api/config',auth)).body).appId,'test');
+for(const path of ['/api/stats','/api/mcp/servers','/api/t3/threads','/api/onboarding/feishu','/api/onboarding/feishu/qr.svg'])assert.equal((await call(path)).status,401);
+assert.equal((await call('/api/onboarding/feishu/start',{...auth,'content-type':'application/json'},'POST','{}')).status,409);
 }finally{await new Promise(r=>service.server.close(r));await rm(dir,{recursive:true,force:true});delete process.env.MAGPIE_CONFIG_DIR;}});
+
+test('manual configuration cannot interleave with committed QR application save',async()=>{
+ const token='b'.repeat(64),port=19992;let release,entered;const saving=new Promise(r=>entered=r);let cfg={enabled:false,appId:'cli_1111111111111111',appSecret:'OLD',serverName:'t3',bindings:[]};
+ const store={read:async(name,fallback)=>name==='config'?structuredClone(cfg):fallback,write:async(name,value)=>{if(name==='config'&&value.appId==='cli_2222222222222222'){entered();await new Promise(r=>release=r);}if(name==='config')cfg=structuredClone(value);}};
+ const service=await startService({}, {port,controlToken:token},{store,registerApp:async()=>({client_id:'cli_2222222222222222',client_secret:'NEW'})});
+ const call=async(path,body)=>{const r=await fetch(`http://127.0.0.1:${port}${path}`,{method:body?'POST':'GET',headers:{authorization:'Bearer '+token,...(body?{'content-type':'application/json'}:{})},...(body?{body:JSON.stringify(body)}:{})});return {status:r.status,body:await r.json()};};
+ try{await call('/api/onboarding/feishu/start',{confirmCreate:true});for(let i=0;i<10&&(await call('/api/onboarding/feishu')).body.state!=='authorized';i++)await new Promise(r=>setTimeout(r,1));const applying=call('/api/onboarding/feishu/apply',{confirmReplace:true});await saving;assert.equal((await call('/api/config',{...cfg,appSecret:''})).status,409);assert.equal((await call('/api/onboarding/feishu/cancel',{})).body.ok,false);release();await applying;assert.equal(cfg.appId,'cli_2222222222222222');assert.equal(cfg.appSecret,'NEW');assert.equal(cfg.enabled,false);}finally{release?.();await new Promise(r=>service.server.close(r));}
+});
