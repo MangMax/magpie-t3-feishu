@@ -8,7 +8,7 @@ import { Bridge } from './bridge.mjs';
 import { T3Client } from './mcp.mjs';
 import { FeishuChannel } from './channels/feishu.mjs';
 import {FeishuOnboarding} from './onboarding.mjs';
-import {discoverServers,serverName,listThreads,launchScratch} from './discovery.mjs';
+import {discoverServers,serverName,listThreads,launchNamedProject,pendingNamedProjects} from './discovery.mjs';
 import {statsSummary} from './stats.mjs';
 export function authorized(header,token){const value=Buffer.from(String(header||''));const expected=Buffer.from('Bearer '+token);return value.length===expected.length&&timingSafeEqual(value,expected);}
 export async function startService(input,options,dependencies={}){
@@ -46,7 +46,8 @@ export async function startService(input,options,dependencies={}){
       if(path==='/api/stats'&&req.method==='GET'){const data=bridge?bridge.stats(url.searchParams.get('days')):statsSummary(await store.read('state',{jobs:[],seen:{}}),Date.now(),url.searchParams.get('days'));res.end(JSON.stringify(data));return;}
       if(path==='/api/mcp/servers'&&req.method==='GET'){try{res.end(JSON.stringify({servers:await discoverServers(libraryBase),source:'magpie-library'}));}catch{res.writeHead(503).end(JSON.stringify({error:'无法读取 Magpie 本机 MCP 名单，请手动填写已配置的服务名称。'}));}return;}
       if(path==='/api/t3/threads'&&req.method==='GET'){const data=await withT3(url.searchParams.get('serverName'),c=>listThreads(c,{cursor:Number(url.searchParams.get('cursor')||0),environmentId:url.searchParams.get('environmentId')||'',query:url.searchParams.get('query')||''}));res.end(JSON.stringify(data));return;}
-      if(path==='/api/t3/create'&&req.method==='POST'){const raw=await bodyJSON(req);if(raw.confirmCreate!==true)throw new Error('Confirmation required');let result;transition=transition.catch(()=>{}).then(async()=>{result=await withT3(raw.serverName,c=>launchScratch(c,store,{...raw,serverName:serverName(raw.serverName)}));});await transition;res.end(JSON.stringify(result));return;}
+      if(path==='/api/t3/pending'&&req.method==='GET'){res.end(JSON.stringify({requests:await pendingNamedProjects(store,{serverName:serverName(url.searchParams.get('serverName')),environmentId:url.searchParams.get('environmentId')||'',title:url.searchParams.get('title')||''})}));return;}
+      if(path==='/api/t3/create'&&req.method==='POST'){const raw=await bodyJSON(req);if(raw.confirmCreate!==true)throw new Error('Confirmation required');let result;transition=transition.catch(()=>{}).then(async()=>{result=await withT3(raw.serverName,c=>launchNamedProject(c,store,{...raw,serverName:serverName(raw.serverName)}));});await transition;res.end(JSON.stringify(result));return;}
       if(path==='/api/onboarding/feishu'&&req.method==='GET'){res.end(JSON.stringify(onboarding.status()));return;}
       if(path==='/api/onboarding/feishu/qr.svg'&&req.method==='GET'){res.setHeader('Content-Type','image/svg+xml');res.end(await onboarding.svg());return;}
       if(path==='/api/onboarding/feishu/start'&&req.method==='POST'){const raw=await bodyJSON(req);if(raw.confirmCreate!==true){res.writeHead(409).end(JSON.stringify({error:'请确认创建新应用；已有机器人将被替换并暂停桥接。'}));return;}res.end(JSON.stringify(onboarding.start()));return;}
@@ -62,7 +63,8 @@ export async function startService(input,options,dependencies={}){
         await transition;res.end(JSON.stringify({ok:true}));return;
       }
       res.writeHead(404).end('{}');
-    }catch(e){const message=e?.code==='unsupported_create'?'此 T3 版本不支持安全幂等创建，请更新 T3 或选择已有会话。':path.startsWith('/api/t3/')?'T3 操作未完成，请检查 MCP 授权与版本。创建结果未知时请先刷新会话列表，不要重复创建。':path.startsWith('/api/onboarding/')?'扫码流程暂不可用，请重新发起或手动接入。':'配置无效或保存失败。核对 open_id、线程及必填项；每个用户和线程只能绑定一次。';res.writeHead(400).end(JSON.stringify({error:message,code:e?.code==='unsupported_create'?'unsupported_create':'request_failed'}));}
+     }catch(e){const errors={unsupported_create:'此 T3 版本不支持安全创建。',unsupported_project:'当前 T3 MCP 未提供命名项目创建所需能力。请检查版本及 Full Access 授权；插件不会自动提权。',project_uncertain:'项目创建结果待核验。保持原参数重试会先核验已有项目，再接续名称、图标与会话设置，不重复创建项目；也可到 T3 检查。',project_pending:'同一目标已有未完成创建请求。请恢复原请求，或在 T3 核对并选择现有会话，不要重复创建。',project_icon_pending:'项目已创建，但图标或名称设置未确认。重试仅更新原项目，不会重复创建；也可到 T3 手动检查图标。',project_thread_pending:'项目已创建，但会话结果未确认。请保持原参数重试同一请求。'};const code=Object.hasOwn(errors,e?.code)?e.code:'request_failed';const message=errors[code]||(path.startsWith('/api/t3/')?'T3 操作未完成。命名项目需 Full Access 授权；请核对权限、版本和原请求。':path.startsWith('/api/onboarding/')?'扫码流程暂不可用，请重新发起或手动接入。':'配置无效或保存失败。请核对必填项。');res.writeHead(400).end(JSON.stringify({error:message,code}));}
+
   });
   await new Promise((resolve,reject)=>{server.once('error',reject);server.listen(port,'127.0.0.1',resolve);});
   // Bound to plugin host lifetime. No detached process or second scheduler.
