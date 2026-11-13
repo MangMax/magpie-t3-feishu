@@ -44,13 +44,14 @@
   }
   function bindingRow(b={}) {
     const row=document.createElement('div');row.className='binding';
-    for(const [key,title,placeholder] of [['userId','飞书 open_id','ou_…'],['threadId','T3 线程 ID','现有线程 ID'],['environmentId','环境 ID（可选）','可留空']]) {
+    for(const [key,title,placeholder] of [['userId','飞书 open_id','ou_…'],['threadId','T3 线程 ID','创建工作区后自动填入，或手动填写'],['environmentId','环境 ID（可选）','可留空']]) {
       const label=document.createElement('label');label.className='field';
       const caption=document.createElement('span');caption.className='field-title';caption.textContent=title;
       const input=document.createElement('input');input.name=key;input.value=b[key]||'';input.placeholder=placeholder;input.autocomplete='off';input.spellcheck=false;input.maxLength=256;
       label.append(caption,input);if(key==='environmentId'){const advanced=document.createElement('details');advanced.className='binding-advanced';const summary=document.createElement('summary');summary.textContent='高级：远程环境';advanced.append(summary,label);row.append(advanced);}else row.append(label);
     }
-    const choose=document.createElement('button');choose.type='button';choose.className='thread-choose';choose.textContent='选择 / 新建会话';choose.onclick=()=>openThreads(row);row.append(choose);
+    const create=document.createElement('button');create.type='button';create.className='workspace-create'+(b.threadId?'':' primary');create.textContent=b.threadId?'改绑到新的专用工作区':'创建专用工作区（推荐）';create.onclick=()=>openThreads(row,'new');row.append(create);
+    const choose=document.createElement('button');choose.type='button';choose.className='thread-choose';choose.textContent=b.threadId?'更换已有会话':'改用已有会话';choose.onclick=()=>openThreads(row);row.append(choose);
     const remove=document.createElement('button');remove.type='button';remove.textContent='移除';remove.setAttribute('aria-label','移除此用户绑定');
     remove.onclick=()=>{if(createReceipt&&createTarget===row){notice('此绑定有结果未确认的创建请求，请先核对 T3 并完成同一请求。');return;}row.remove();edited();$('add-binding').disabled=false;};row.append(remove);$('bindings').append(row);
     $('add-binding').disabled=$('bindings').children.length>=20;
@@ -82,7 +83,7 @@
   function checkStep(n){
     if(n===0&&(!$('serverName').value.trim()||/^https?:/i.test($('serverName').value.trim())))throw new Error('请填写 Magpie 中 T3 MCP 的服务名称，不要填写 Connect 网址。');
     if(n===1&&(!/^cli_[0-9a-fA-F]{16}$/.test($('appId').value.trim())||!($('appSecret').value||hasSecret)))throw new Error('请填写有效的飞书 App ID 和 App Secret，再继续。');
-    if(n===2){const bindings=readBindings();if(!bindings.length)throw new Error('请先添加你自己的 open_id 和一个现有 T3 线程。');validate({enabled:false,bindings});}
+    if(n===2){const bindings=readBindings();if(!bindings.length)throw new Error('请先添加你自己的 open_id，再创建专用工作区或选择已有会话。');validate({enabled:false,bindings});}
   }
   $('next').onclick=()=>{try{checkStep(step);notice('','');showStep(Math.min(3,step+1),true);}catch(e){notice(e.message);}};
   $('previous').onclick=()=>{notice('','');showStep(Math.max(0,step-1),true);};
@@ -150,7 +151,7 @@
       if(!$('mcp-results').children.length)textNotice('mcp-notice','没有发现可见服务。隐藏、未授权的服务可能不可发现，请手动填写名称。');else textNotice('mcp-notice','选择你的 T3 服务；列表中的其他 MCP 不能用于桥接。');
     }catch(e){textNotice('mcp-notice',e.message+' 可继续手动配置。','error');}finally{$('discover-mcp').disabled=false;}
   };
-  function openThreads(row){if(creatingThread||createReceipt&&createTarget!==row){notice('正在创建或核对另一个绑定的会话，请先完成该请求。');return;}activeBinding=row;$('thread-picker').hidden=false;$('thread-environment').value=bindingInput(row,'environmentId').value;$('thread-results').replaceChildren();$('thread-more').hidden=true;threadCursor=null;textNotice('thread-notice','');$('thread-picker').scrollIntoView?.({block:'start',behavior:'auto'});loadThreads(false);}
+  function openThreads(row,mode='existing'){if(creatingThread||createReceipt&&createTarget!==row){notice('正在创建或核对另一个绑定的会话，请先完成该请求。');return;}activeBinding=row;$('thread-picker').hidden=false;$('thread-existing').hidden=mode==='new';$('thread-new').hidden=mode!=='new';$('thread-picker-title').textContent=mode==='new'?'创建飞书 IM 专用工作区':'选择已有 T3 对话';$('thread-picker-description').textContent=mode==='new'?'确认后才创建目录，不会发送消息或启动任务。':'只读取标题与标识，不会发送消息或打开任务。';$('thread-environment').value=bindingInput(row,'environmentId').value;$('thread-results').replaceChildren();$('thread-more').hidden=true;threadCursor=null;textNotice('thread-notice','');$('thread-picker').scrollIntoView?.({block:'start',behavior:'auto'});if(mode==='existing')loadThreads(false);}
   $('thread-close').onclick=()=>{if(creatingThread){textNotice('thread-notice','正在创建会话，请等待结果后再关闭。');return;}activeBinding=null;$('thread-picker').hidden=true;threadRequest++;};
   async function loadThreads(more){
     if(!activeBinding)return;const serverName=$('serverName').value.trim();if(!serverName){textNotice('thread-notice','请先选择或填写 T3 MCP 服务。','error');return;}const generation=++threadRequest;$('thread-search').disabled=true;$('thread-more').disabled=true;textNotice('thread-notice','正在读取 T3 会话…');if(!more)$('thread-results').replaceChildren();
@@ -161,11 +162,11 @@
   }
   $('thread-search').onclick=()=>loadThreads(false);$('thread-more').onclick=()=>loadThreads(true);
   $('thread-create').onclick=async()=>{
-    if(creatingThread||!activeBinding)return;if(!$('thread-create-confirm').checked){textNotice('thread-notice','请先确认创建新的临时工作区。','error');return;}
+    if(creatingThread||!activeBinding)return;if(!$('thread-create-confirm').checked){textNotice('thread-notice','请先确认创建新的专用工作区。','error');return;}
     if(!createReceipt){const serverName=$('serverName').value.trim(),title=$('thread-title').value.trim();if(!serverName||!title){textNotice('thread-notice','请填写 T3 服务和会话名称。','error');return;}createTarget=activeBinding;createTargetUser=bindingInput(activeBinding,'userId').value.trim();createReceipt={serverName,title,environmentId:$('thread-environment').value.trim(),confirmCreate:true,requestId:'im-'+Date.now().toString(36)+'-'+Math.random().toString(36).slice(2)};}
     if(createTarget!==activeBinding||$('serverName').value.trim()!==createReceipt.serverName||$('thread-environment').value.trim()!==createReceipt.environmentId||$('thread-title').value.trim()!==createReceipt.title||bindingInput(createTarget,'userId').value.trim()!==createTargetUser){textNotice('thread-notice','创建请求的目标已变化。请先在 T3 核对原请求，并恢复原服务、环境、会话名称和用户后重试。','error');return;}
     creatingThread=true;$('thread-create').disabled=true;textNotice('thread-notice','正在创建独立会话，不会启动模型…');
-    try{const t=await api('api/t3/create',createReceipt);if(typeof t.threadId!=='string'||!t.threadId)throw new Error('创建结果未确认，请先到 T3 核对，不要重复创建。');if($('serverName').value.trim()!==createReceipt.serverName||$('thread-environment').value.trim()!==createReceipt.environmentId||$('thread-title').value.trim()!==createReceipt.title||bindingInput(createTarget,'userId').value.trim()!==createTargetUser)throw new Error('会话已创建，但绑定目标在等待期间发生变化。请恢复原服务和用户后重试同一请求。');if(!createTarget||![...$('bindings').children].includes(createTarget))throw new Error('会话已创建，但原绑定已移除。请在 T3 核对并从会话列表选择，不要新建重复会话。');if(createTarget){bindingInput(createTarget,'threadId').value=t.threadId;bindingInput(createTarget,'environmentId').value=typeof t.environmentId==='string'?t.environmentId:'';edited();}$('thread-picker').hidden=true;activeBinding=null;createReceipt=null;createTarget=null;$('thread-create-confirm').checked=false;notice('专用会话已创建并填入绑定；保存配置后才会用于飞书。','success');}
+    try{const t=await api('api/t3/create',createReceipt);if(typeof t.threadId!=='string'||!t.threadId)throw new Error('创建结果未确认，请先到 T3 核对，不要重复创建。');if($('serverName').value.trim()!==createReceipt.serverName||$('thread-environment').value.trim()!==createReceipt.environmentId||$('thread-title').value.trim()!==createReceipt.title||bindingInput(createTarget,'userId').value.trim()!==createTargetUser)throw new Error('会话已创建，但绑定目标在等待期间发生变化。请恢复原服务和用户后重试同一请求。');if(!createTarget||![...$('bindings').children].includes(createTarget))throw new Error('会话已创建，但原绑定已移除。请在 T3 核对并从会话列表选择，不要新建重复会话。');if(createTarget){bindingInput(createTarget,'threadId').value=t.threadId;bindingInput(createTarget,'environmentId').value=typeof t.environmentId==='string'?t.environmentId:'';for(const child of createTarget.children){if(child.className?.startsWith('workspace-create')){child.className='workspace-create';child.textContent='改绑到新的专用工作区';}}edited();}$('thread-picker').hidden=true;activeBinding=null;createReceipt=null;createTarget=null;$('thread-create-confirm').checked=false;notice('专用会话已创建并填入绑定；保存配置后才会用于飞书。','success');}
     catch(e){textNotice('thread-notice',e.message+' 再次点击将重试同一创建请求；请先到 T3 核对。','error');}
     finally{creatingThread=false;$('thread-create').disabled=false;}
   };
@@ -179,7 +180,7 @@
       if(data.state==='authorized'){releaseQR();$('qr-panel').hidden=true;$('qr-apply').hidden=false;textNotice('qr-notice','飞书授权已完成，尚未改动当前机器人。点击「使用此机器人」才会保存新配置；之后仍需核对事件订阅和发布。','success');return;}
       if(data.state==='saving'){qrSaving=true;textNotice('qr-notice','正在保存新的机器人配置，请稍候…');$('qr-apply').disabled=true;$('qr-cancel').disabled=true;qrTimer=setTimeout(checkQR,2000);return;}
       qrActive=false;qrSaving=false;releaseQR();$('qr-cancel').disabled=false;$('qr-apply').disabled=false;$('qr-cancel').hidden=true;$('qr-apply').hidden=true;$('qr-start').disabled=false;
-      if(data.state==='complete'){const c=await api('api/config');$('appId').value=c.appId;loadedAppId=c.appId;hasSecret=!!c.hasSecret;$('appSecret').value='';$('appSecret').placeholder='已保存，留空不变';$('enabled').checked=false;$('bindings').replaceChildren();if(typeof data.openId==='string'&&/^ou_[a-zA-Z0-9]+$/.test(data.openId))bindingRow({userId:data.openId});$('qr-panel').hidden=true;$('qr-replace-row').hidden=!hasSecret;edited();textNotice('qr-notice','应用凭据已保存，桥接保持关闭。请核对飞书事件订阅和应用发布，再选择会话并确认启用。','success');showStep(2,true);notice('扫码已完成。请核对预填的本人身份，并选择一个 T3 会话。','success');}
+      if(data.state==='complete'){const c=await api('api/config');$('appId').value=c.appId;loadedAppId=c.appId;hasSecret=!!c.hasSecret;$('appSecret').value='';$('appSecret').placeholder='已保存，留空不变';$('enabled').checked=false;$('bindings').replaceChildren();if(typeof data.openId==='string'&&/^ou_[a-zA-Z0-9]+$/.test(data.openId))bindingRow({userId:data.openId});$('qr-panel').hidden=true;$('qr-replace-row').hidden=!hasSecret;edited();textNotice('qr-notice','应用凭据已保存，桥接保持关闭。请核对飞书事件订阅和应用发布，再选择会话并确认启用。','success');showStep(2,true);notice('扫码已完成。请核对预填的本人身份，再点击「创建专用工作区」完成接入。','success');}
       else {const states={expired:'二维码已过期，请重新生成。',cancelled:'已取消本次接入。',error:'扫码接入未完成。请核对飞书授权后重试，或使用手动配置。',idle:'没有正在进行的扫码接入。'};textNotice('qr-notice',states[data.state]||'接入状态未知，请重新打开页面核对。',data.state==='error'?'error':'');$('qr-panel').hidden=true;}
     }catch(e){textNotice('qr-notice',e.message+' 可点击检查授权结果重试。','error');}
   }

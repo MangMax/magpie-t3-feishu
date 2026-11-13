@@ -145,3 +145,23 @@ test('uncertain scratch retry rejects changing the original target',async()=>{
 test('pending creation blocks robot replacement and missing original row cannot report success',async()=>{
  let resolve;const s=setup({routes:{'/api/t3/threads':{threads:[],nextCursor:null},'/api/t3/create':()=>new Promise(r=>{resolve=r;})}});await s.run();s.get('add-binding').onclick();const row=s.get('bindings').children[0];row.children.find(c=>c.className==='thread-choose').onclick();await new Promise(setImmediate);s.get('thread-title').value='飞书 IM';s.get('thread-create-confirm').checked=true;const pending=s.get('thread-create').onclick();await new Promise(setImmediate);await s.get('qr-apply').onclick();assert.match(s.get('qr-notice').textContent,/创建请求/);assert.ok(s.calls.every(c=>!c.url.includes('/feishu/apply')));row.remove();resolve({threadId:'created-in-t3',environmentId:''});await pending;assert.match(s.get('thread-notice').textContent,/原绑定已移除/);assert.doesNotMatch(s.get('notice').textContent,/已创建并填入/);
 });
+test('new binding prioritizes workspace creation without listing or creating automatically',async()=>{
+ const s=setup();await s.run();s.get('add-binding').onclick();const row=s.get('bindings').children[0];
+ const primary=row.children.find(c=>c.className==='workspace-create primary');assert.ok(primary);primary.onclick();
+ assert.equal(s.get('thread-new').hidden,false);assert.equal(s.get('thread-existing').hidden,true);
+ assert.ok(s.calls.every(c=>!c.url.includes('/api/t3/')));assert.match(s.get('thread-picker-title').textContent,/创建/);
+ assert.equal(row.querySelectorAll('input')[1].value,'');assert.equal(s.saved,undefined);
+});
+test('existing bindings stay unchanged and choose existing remains read-only',async()=>{
+ const s=setup({configOverride:{bindings:[{userId:'ou_self',threadId:'old-thread',environmentId:'remote'}]},routes:{'/api/t3/threads':{threads:[],nextCursor:null}}});await s.run();
+ const row=s.get('bindings').children[0];assert.equal(row.querySelectorAll('input')[1].value,'old-thread');
+ assert.ok(s.calls.every(c=>!c.url.includes('/api/t3/')));row.children.find(c=>c.className==='thread-choose').onclick();await new Promise(setImmediate);
+ assert.equal(s.get('thread-existing').hidden,false);assert.equal(s.get('thread-new').hidden,true);assert.equal(row.querySelectorAll('input')[1].value,'old-thread');
+ assert.ok(s.calls.every(c=>c.o.method==='GET'));
+});
+test('workspace creation is visible and status is outside the optional existing-thread pane',async()=>{
+ const html=await readFile(new URL('../page/service.html',import.meta.url),'utf8');
+ assert.match(html,/<section id="thread-new"/);assert.doesNotMatch(html,/<details[^>]*>\s*<summary>新建飞书/);
+ assert.ok(html.indexOf('id="thread-notice"')>html.indexOf('id="thread-results"'));
+ assert.match(html,/不承诺自动清理或永久保留/);assert.doesNotMatch(html,/临时工作区/);
+});
