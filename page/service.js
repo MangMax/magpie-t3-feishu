@@ -200,8 +200,13 @@
   $('qr-refresh').onclick=()=>{qrActive=true;return checkQR();};$('qr-apply').onclick=async()=>{if(createReceipt){textNotice('qr-notice','请先核对尚未完成的 T3 创建请求，再替换机器人。','error');return;}if(qrSaving||$('qr-apply').disabled)return;if(hasSecret&&!$('qr-replace').checked){textNotice('qr-notice','替换前请明确确认暂停原桥接并清空原绑定。','error');return;}$('qr-apply').disabled=true;try{await api('api/onboarding/feishu/apply',{confirmReplace:true});qrActive=true;await checkQR();}catch(e){textNotice('qr-notice',e.message+' 请检查状态后再继续。','error');qrActive=true;await checkQR();}finally{if(!qrSaving)$('qr-apply').disabled=false;}};$('qr-cancel').onclick=async()=>{try{const cancelled=await api('api/onboarding/feishu/cancel',{});if(cancelled.ok===false&&cancelled.state==='saving'){textNotice('qr-notice','正在保存配置，此时无法取消。请等待完成后核对。');return;}qrActive=false;releaseQR();$('qr-panel').hidden=true;$('qr-cancel').hidden=true;$('qr-apply').hidden=true;$('qr-start').disabled=false;textNotice('qr-notice','已取消本次接入。');}catch(e){textNotice('qr-notice',e.message,'error');}};
 
   let view='settings',rangeDays=7,statsLoading=false,statsSequence=0;
+  const viewScroll=new Map();
   function showView(name){
+    if(!['overview','stats','settings'].includes(name))return;
+    // Each page owns its scroll position; never scroll the host or reset the window.
+    viewScroll.set(view,$('view-'+view).scrollTop||0);
     view=name;for(const n of ['overview','stats','settings']){$('view-'+n).hidden=n!==name;$('nav-'+n).setAttribute('aria-current',n===name?'page':'false');}
+    $('view-'+name).scrollTop=viewScroll.get(name)||0;
     if(name==='overview'){$('runtime').hidden=false;refresh().catch(()=>{});}
     if(name==='stats')loadStats();
   }
@@ -227,9 +232,15 @@
   async function loadStats(){
     if(!/^[0-9a-f]{64}$/.test(token))return;const sequence=++statsSequence;statsLoading=true;$('stats-refresh').disabled=true;$('stats-notice').textContent='正在读取…';$('stats-notice').dataset.kind='';busy('view-stats',true);busy('stats-refresh',true);
     for(const n of [7,30])$('range-'+n).setAttribute('aria-pressed',n===rangeDays?'true':'false');
-    try{const data=await api('api/stats?days='+rangeDays);if(sequence!==statsSequence)return;if(data.version!==1||!Array.isArray(data.days))throw new Error('当前服务尚不支持统计，请更新插件并重新打开。');const days=data.days.filter(d=>/^\d{4}-\d{2}-\d{2}$/.test(d.date)).slice(-rangeDays);const total={};for(const d of days)for(const k of ['accepted','completed','blocked','latencyMs','latencyCount','runCompleted','runFailed','runCancelled','runInterrupted','runRolledBack'])total[k]=(total[k]||0)+count(d[k]);
+    try{const data=await api('api/stats?days='+rangeDays);if(sequence!==statsSequence)return;if(data.version!==1||!Array.isArray(data.days))throw new Error('当前服务尚不支持统计，请更新插件并重新打开。');const validStart=typeof data.startedAt==='number'&&Number.isFinite(data.startedAt)&&data.startedAt>0&&data.startedAt<8.64e15-28800000;
+      if(!validStart&&data.days.length&&data.coverageEstablished!==false)throw new Error('缺少可信的统计开始时间，暂不展示历史数据。');
+      const today=new Date((Number.isFinite(data.asOf)?data.asOf:Date.now())+28800000).toISOString().slice(0,10);
+      const startDay=validStart&&data.coverageEstablished!==false?new Date(data.startedAt+28800000).toISOString().slice(0,10):null;
+      // The API zero-fills its requested range, including dates before telemetry existed.
+      // Those dates are unknown, not recorded zeroes: exclude them from every display.
+      const days=data.days.filter(d=>/^\d{4}-\d{2}-\d{2}$/.test(d.date)&&startDay&&d.date>=startDay&&d.date<=today).slice(-rangeDays);const total={};for(const d of days)for(const k of ['accepted','completed','blocked','latencyMs','latencyCount','runCompleted','runFailed','runCancelled','runInterrupted','runRolledBack'])total[k]=(total[k]||0)+count(d[k]);
       $('stats-accepted').textContent=formatCount(total.accepted);$('stats-delivered').textContent=formatCount(total.completed);$('stats-blocked').textContent=formatCount(total.blocked);$('stats-latency').textContent=total.latencyCount?duration(total.latencyMs/total.latencyCount):'—';
-      $('stats-coverage').textContent='近 '+rangeDays+' 天 · 开始记录于 '+moment(data.startedAt)+' · 日聚合保留 '+count(data.retentionDays)+' 天';drawTrend(days);drawOutcomes(total);$('stats-table').replaceChildren();for(const d of days){const row=document.createElement('tr');for(const v of [d.date,formatCount(d.accepted),formatCount(d.completed),formatCount(d.blocked)]){const cell=document.createElement('td');cell.textContent=v;row.append(cell);}$('stats-table').append(row);}$('stats-notice').textContent='';
+      $('stats-coverage').textContent=days.length?'近 '+rangeDays+' 天内实际覆盖：'+days[0].date+(days.length>1?' 至 '+days[days.length-1].date:'')+'（北京时间）'+(days.some(d=>d.date===startDay)?' · 起始日仅从 '+new Date(data.startedAt).toLocaleTimeString('zh-CN',{timeZone:'Asia/Shanghai',hour12:false})+' 开始记录，部分覆盖':'')+(days.some(d=>d.date===today)?' · 今日尚未结束，部分覆盖':'')+' · 开始记录前无数据，不按 0 计':data.coverageEstablished===false?'尚未开始统计':'尚无已覆盖日期'+(startDay?' · 开始记录于 '+startDay+'（北京时间）':' · 统计开始时间未知');if(!days.length){for(const id of ['stats-accepted','stats-delivered','stats-blocked'])$(id).textContent='—';}drawTrend(days);drawOutcomes(total);$('stats-table').replaceChildren();for(const d of days){const row=document.createElement('tr');for(const v of [d.date+(d.date===startDay||d.date===today?'（部分覆盖）':''),formatCount(d.accepted),formatCount(d.completed),formatCount(d.blocked)]){const cell=document.createElement('td');cell.textContent=v;row.append(cell);}$('stats-table').append(row);}$('stats-notice').textContent='';
     }catch(e){if(sequence===statsSequence){$('stats-notice').textContent=e.message+' 如下方仍有数据，它来自上次成功读取，请以标注的日期范围为准。';$('stats-notice').dataset.kind='error';}}
     finally{if(sequence===statsSequence){statsLoading=false;$('stats-refresh').disabled=false;busy('view-stats',false);busy('stats-refresh',false);}}
   }
