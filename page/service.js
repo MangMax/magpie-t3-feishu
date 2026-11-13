@@ -77,10 +77,17 @@
       '可信用户：'+$('bindings').children.length+' 位（每位绑定独立线程）'
     ]){const li=document.createElement('li');li.textContent=text;$('review').append(li);}
   }
+  // WAAPI explicitly restarts entry motion after display:none, with no delayed callbacks.
+  // Cancelling previous motion prevents rapid switches from leaving stale opacity behind.
+  function revealPane(pane){
+    for(const motion of pane.getAnimations?.()||[])motion.cancel();
+    if(!window.matchMedia?.('(prefers-reduced-motion: reduce)').matches)
+      pane.animate?.([{opacity:0},{opacity:1}],{duration:220,easing:'cubic-bezier(.2,.7,.2,1)'});
+  }
   function showStep(n,focus=false){
-    step=n;for(let i=0;i<4;i++){$('step-'+i).hidden=i!==n;$('step-tab-'+i).setAttribute('aria-current',i===n?'step':'false');}
+    const changed=step!==n;step=n;$('step-nav').dataset.step=String(n);for(let i=0;i<4;i++){$('step-'+i).hidden=i!==n;$('step-tab-'+i).setAttribute('aria-current',i===n?'step':'false');}
     $('previous').hidden=n===0;$('next').hidden=n===3;$('runtime').hidden=n!==3;
-    updateReview();if(focus){$('step-'+n).focus();$('step-'+n).scrollIntoView?.({block:'start',behavior:'auto'});}
+    updateReview();if(changed)revealPane($('step-'+n));if(focus)$('step-'+n).focus({preventScroll:true});
   }
   function checkStep(n){
     if(n===0&&(!$('serverName').value.trim()||/^https?:/i.test($('serverName').value.trim())))throw new Error('请填写 Magpie 中 T3 MCP 的服务名称，不要填写 Connect 网址。');
@@ -203,15 +210,37 @@
   const viewScroll=new Map();
   function showView(name){
     if(!['overview','stats','settings'].includes(name))return;
-    // Each page owns its scroll position; never scroll the host or reset the window.
+    const changed=view!==name;
+    const moveFocus=changed&&$('view-'+view).contains?.(document.activeElement);
     viewScroll.set(view,$('view-'+view).scrollTop||0);
-    view=name;for(const n of ['overview','stats','settings']){$('view-'+n).hidden=n!==name;$('nav-'+n).setAttribute('aria-current',n===name?'page':'false');}
-    $('view-'+name).scrollTop=viewScroll.get(name)||0;
+    view=name;$('product-nav').dataset.view=name;
+    for(const n of ['overview','stats','settings']){
+      const active=n===name,pane=$('view-'+n),tab=$('nav-'+n);
+      if(!active)for(const motion of pane.getAnimations?.()||[])motion.cancel();
+      pane.hidden=!active;pane.inert=!active;
+      tab.setAttribute('aria-current',active?'page':'false');
+      tab.setAttribute('aria-selected',String(active));tab.tabIndex=active?0:-1;
+    }
+    const pane=$('view-'+name);pane.scrollTop=viewScroll.get(name)||0;
+    if(changed)revealPane(pane);
+    if(moveFocus)$('nav-'+name).focus({preventScroll:true});
     if(name==='overview'){$('runtime').hidden=false;refresh().catch(()=>{});}
     if(name==='stats')loadStats();
   }
-  $('overview-settings').onclick=()=>showView('settings');
-  for(const name of ['overview','stats','settings'])$('nav-'+name).onclick=()=>showView(name);
+  $('overview-settings').onclick=()=>{showView('settings');$('nav-settings').focus({preventScroll:true});};
+  const viewNames=['overview','stats','settings'];
+  for(const [index,name] of viewNames.entries()){
+    const tab=$('nav-'+name);tab.onclick=()=>showView(name);
+    tab.onkeydown=event=>{
+      let next;
+      if(event.key==='ArrowRight')next=(index+1)%viewNames.length;
+      else if(event.key==='ArrowLeft')next=(index+viewNames.length-1)%viewNames.length;
+      else if(event.key==='Home')next=0;
+      else if(event.key==='End')next=viewNames.length-1;
+      else return;
+      event.preventDefault();showView(viewNames[next]);$('nav-'+viewNames[next]).focus({preventScroll:true});
+    };
+  }
   const formatCount=n=>count(n).toLocaleString();
   const duration=n=>!Number.isFinite(n)||n<0?'—':n<1000?Math.round(n)+' 毫秒':n<60000?(n/1000).toFixed(1)+' 秒':(n/60000).toFixed(1)+' 分钟';
   function svgNode(tag,attrs={},text){const node=document.createElementNS('http://www.w3.org/2000/svg',tag);for(const [k,v]of Object.entries(attrs))node.setAttribute(k,String(v));if(text!==undefined)node.textContent=text;return node;}
