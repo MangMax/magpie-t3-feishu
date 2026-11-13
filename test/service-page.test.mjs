@@ -165,3 +165,35 @@ test('workspace creation is visible and status is outside the optional existing-
  assert.ok(html.indexOf('id="thread-notice"')>html.indexOf('id="thread-results"'));
  assert.match(html,/不承诺自动清理或永久保留/);assert.doesNotMatch(html,/临时工作区/);
 });
+
+test('named project creation discloses Full Access and honest character badge',async()=>{
+ const html=await readFile(new URL('../page/service.html',import.meta.url),'utf8');
+ assert.match(html,/独立命名项目/);assert.match(html,/Full Access/);assert.match(html,/蓝色「飞」字标（不是飞书品牌 Logo）/);assert.match(html,/不会自动提升权限/);
+});
+
+test('named project initialization warning remains visible after binding',async()=>{
+ const s=setup({routes:{'/api/t3/create':{threadId:'named-new',projectId:'p-new',environmentId:'',commitWarning:true}}});await s.run();s.get('add-binding').onclick();const row=s.get('bindings').children[0];row.children.find(c=>c.className?.startsWith('workspace-create')).onclick();s.get('thread-title').value='飞书 IM';s.get('thread-create-confirm').checked=true;await s.get('thread-create').onclick();assert.equal(row.querySelectorAll('input')[1].value,'named-new');assert.match(s.get('notice').textContent,/首次 Git 提交有警告/);
+});
+test('reopened page can explicitly recover original named project request',async()=>{
+ const payload=[];const s=setup({routes:{'/api/t3/pending':{requests:[{requestId:'original-request-123456',title:'飞书 IM',state:'creating'}]},'/api/t3/create':(u,o)=>{payload.push(JSON.parse(o.body));return{threadId:'recovered',projectId:'p'};}}});await s.run();s.get('add-binding').onclick();const row=s.get('bindings').children[0];row.children.find(c=>c.className?.startsWith('workspace-create')).onclick();s.get('thread-title').value='飞书 IM';await s.get('thread-recover').onclick();assert.equal(payload.length,0);s.get('thread-create-confirm').checked=true;await s.get('thread-create').onclick();assert.equal(payload[0].requestId,'original-request-123456');assert.equal(row.querySelectorAll('input')[1].value,'recovered');
+});
+test('creation never overwrites a thread binding edited while request is in flight',async()=>{
+ let resolve;const s=setup({routes:{'/api/t3/create':()=>new Promise(r=>resolve=r)}});await s.run();s.get('add-binding').onclick();const row=s.get('bindings').children[0];row.children.find(c=>c.className?.startsWith('workspace-create')).onclick();s.get('thread-title').value='飞书 IM';s.get('thread-create-confirm').checked=true;const creating=s.get('thread-create').onclick();await new Promise(setImmediate);row.querySelectorAll('input')[1].value='manual-thread';resolve({threadId:'new-thread',projectId:'p'});await creating;assert.equal(row.querySelectorAll('input')[1].value,'manual-thread');assert.match(s.get('thread-notice').textContent,/发生变化/);
+});
+
+test('unique Relay is preselected only for an unconfigured untouched form, never saved',async()=>{
+ const s=setup({configOverride:{serverName:''},routes:{'/api/mcp/servers':{servers:[{name:'relay',relayMatched:true},{name:'other',suggested:true}]}}});await s.run();await new Promise(setImmediate);assert.equal(s.get('serverName').value,'relay');assert.equal(s.saved,undefined);assert.match(s.get('mcp-notice').textContent,/预选.*尚未保存/);assert.equal(s.get('mcp-results').children[0].dataset.recommended,'true');
+ const multiple=setup({configOverride:{serverName:''},routes:{'/api/mcp/servers':{servers:[{name:'one',relayMatched:true},{name:'two',relayMatched:true}]}}});await multiple.run();await new Promise(setImmediate);assert.equal(multiple.get('serverName').value,'');assert.match(multiple.get('mcp-notice').textContent,/多个/);multiple.get('mcp-results').children[1].onclick();assert.equal(multiple.get('serverName').value,'two');assert.equal(multiple.saved,undefined);
+});
+test('MCP discovery never overwrites saved or in-flight manual choices',async()=>{
+ const s=setup({configOverride:{serverName:'saved'},routes:{'/api/mcp/servers':{servers:[{name:'relay',relayMatched:true}]}}});await s.run();await s.get('discover-mcp').onclick();assert.equal(s.get('serverName').value,'saved');
+ let resolve;const edited=setup({configOverride:{serverName:''},routes:{'/api/mcp/servers':()=>new Promise(r=>resolve=r)}});await edited.run();await new Promise(setImmediate);edited.get('serverName').value='manual';edited.get('serverName').oninput();resolve({servers:[{name:'relay',relayMatched:true}]});await new Promise(setImmediate);assert.equal(edited.get('serverName').value,'manual');assert.equal(edited.get('discover-mcp')['aria-busy'],'false');
+});
+test('creation never overwrites an environment edited while request is in flight',async()=>{
+ let resolve;const s=setup({routes:{'/api/t3/create':()=>new Promise(r=>resolve=r)}});await s.run();s.get('add-binding').onclick();const row=s.get('bindings').children[0];row.children.find(c=>c.className?.startsWith('workspace-create')).onclick();s.get('thread-title').value='飞书 IM';s.get('thread-create-confirm').checked=true;const creating=s.get('thread-create').onclick();await new Promise(setImmediate);row.querySelectorAll('input')[2].value='manual-env';resolve({threadId:'new-thread',projectId:'p',environmentId:'original'});await creating;assert.equal(row.querySelectorAll('input')[2].value,'manual-env');assert.equal(row.querySelectorAll('input')[1].value,'');assert.match(s.get('thread-notice').textContent,/发生变化/);
+});
+test('loading states settle and motion remains CSP-safe with reduced-motion support',async()=>{
+ let resolve;const s=setup({routes:{'/api/stats':()=>new Promise(r=>resolve=r)}});await s.run();s.get('nav-stats').onclick();assert.equal(s.get('view-stats')['aria-busy'],'true');await new Promise(setImmediate);resolve({version:1,days:[],retentionDays:30,startedAt:Date.now()});await new Promise(setImmediate);assert.equal(s.get('view-stats')['aria-busy'],'false');assert.equal(s.get('trend-empty').hidden,false);
+ const css=await readFile(new URL('../page/ui.css',import.meta.url),'utf8');assert.match(css,/prefers-reduced-motion:reduce/);assert.match(css,/chart-draw/);assert.match(css,/skeleton-pass/);assert.match(code,/pathLength:1/);
+ const html=await readFile(new URL('../page/service.html',import.meta.url),'utf8');assert.match(html,/details class="delivery-diagnostics"/);assert.doesNotMatch(html,/<script>\s*\S|style="|target="_blank"/);
+});
