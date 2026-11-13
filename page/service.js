@@ -25,19 +25,21 @@
   try { history.replaceState(null,'',location.pathname+location.search); } catch { /* sandboxed webview */ }
   const $=id=>document.getElementById(id);
   const form=$('form'), fields=$('fields');
-  let hasSecret=false, saving=false, refreshing=false, dirty=false, step=0, loadedAppId='';
+  let hasSecret=false, saving=false, refreshing=false, dirty=false, step=0, loadedAppId='', loadedServerName='', serverTouched=false, discovering=false;
   const requests=new Set();
   addEventListener('pagehide',()=>{for(const c of requests)c.abort();});
   function notice(message,kind='error') { $('notice').textContent=message; $('notice').dataset.kind=kind; }
   function edited() { dirty=true;$('dirty').textContent='有未保存的修改';updateReview(); }
   form.addEventListener('input',edited);
+  $('serverName').addEventListener('input',()=>{serverTouched=true;});
+  function busy(id,on){$(id).setAttribute('aria-busy',String(on));$(id).dataset.loading=String(on);}
   async function api(path,body) {
     const controller=new AbortController();requests.add(controller);
     const timer=setTimeout(()=>controller.abort(),15000);
     try {
       const r=await fetch(new URL(path,location.href),{method:body?'POST':'GET',signal:controller.signal,
         headers:{authorization:'Bearer '+token,...(body?{'content-type':'application/json'}:{})},body:body?JSON.stringify(body):undefined});
-      if(!r.ok) {let failure;try{failure=await r.json();}catch{}if(failure?.code==='unsupported_create')throw new Error('此 T3 版本不支持安全幂等创建。请更新 T3 或选择已有会话。');throw new Error(r.status===401?'控制密钥已失效，请从 Magpie 重新打开插件页。':r.status===400?'配置无效或保存失败，请核对必填项、用户和线程是否重复。':'请求失败（'+r.status+'），请检查插件是否启用。');}
+      if(!r.ok) {let failure;try{failure=await r.json();}catch{}if(['unsupported_project','project_uncertain','project_pending','project_icon_pending','project_thread_pending'].includes(failure?.code))throw new Error(failure.error);if(failure?.code==='unsupported_create')throw new Error('此 T3 版本不支持安全幂等创建。请更新 T3 或选择已有会话。');throw new Error(r.status===401?'控制密钥已失效，请从 Magpie 重新打开插件页。':r.status===400?'配置无效或保存失败，请核对必填项、用户和线程是否重复。':'请求失败（'+r.status+'），请检查插件是否启用。');}
       return await r.json();
     } catch(e) { if(e.name==='AbortError')throw new Error(body?'保存超时，结果尚不确定。请重新打开页面核对已保存配置，不要重复提交。':'读取超时，请检查本地服务后重试。');throw e; }
     finally { clearTimeout(timer);requests.delete(controller); }
@@ -50,7 +52,7 @@
       const input=document.createElement('input');input.name=key;input.value=b[key]||'';input.placeholder=placeholder;input.autocomplete='off';input.spellcheck=false;input.maxLength=256;
       label.append(caption,input);if(key==='environmentId'){const advanced=document.createElement('details');advanced.className='binding-advanced';const summary=document.createElement('summary');summary.textContent='高级：远程环境';advanced.append(summary,label);row.append(advanced);}else row.append(label);
     }
-    const create=document.createElement('button');create.type='button';create.className='workspace-create'+(b.threadId?'':' primary');create.textContent=b.threadId?'改绑到新的专用工作区':'创建专用工作区（推荐）';create.onclick=()=>openThreads(row,'new');row.append(create);
+    const create=document.createElement('button');create.type='button';create.className='workspace-create'+(b.threadId?'':' primary');create.textContent=b.threadId?'改绑到新的专用工作区':'创建独立项目（推荐）';create.onclick=()=>openThreads(row,'new');row.append(create);
     const choose=document.createElement('button');choose.type='button';choose.className='thread-choose';choose.textContent=b.threadId?'更换已有会话':'改用已有会话';choose.onclick=()=>openThreads(row);row.append(choose);
     const remove=document.createElement('button');remove.type='button';remove.textContent='移除';remove.setAttribute('aria-label','移除此用户绑定');
     remove.onclick=()=>{if(createReceipt&&createTarget===row){notice('此绑定有结果未确认的创建请求，请先核对 T3 并完成同一请求。');return;}row.remove();edited();$('add-binding').disabled=false;};row.append(remove);$('bindings').append(row);
@@ -126,48 +128,54 @@
     $('status').textContent=JSON.stringify({enabled:s.enabled===true,running:s.running===true,...safe,lastDecision:labelFor(decisionNames,d?.lastDecision)||null,t3:op&&outcome?{operation:op,outcome}:null},null,2);
   }
   async function refresh(){
-    if(refreshing)return;refreshing=true;$('refresh').disabled=true;
+    if(refreshing)return;refreshing=true;$('refresh').disabled=true;busy('refresh',true);busy('runtime',true);
     try{
       const s=await api('api/status');diagnose(s);
       const state=s.error?'需要关注':!s.enabled?'未启用':s.running?'桥接已启动':'未运行';
       $('connection').textContent=state;$('connection').dataset.kind=s.error?'error':s.running?'success':'';
       const channel=typeof s.channelConnection==='string'?s.channelConnection:s.channelConnection?.state;
       $('channel').textContent=labelFor(channelNames,channel)||'未知';
+      $('overview-title').textContent=s.error?'连接需要关注':!s.enabled?'准备好开始了吗？':s.running?'桥接已启动':'桥接暂未运行';$('overview-next').textContent=s.error?'展开诊断，查看消息停在哪一步。':!s.enabled?'完成连接设置，再发出第一条私聊。':s.running?'给飞书机器人发一条私聊，继续你的 T3 任务。':'检查连接设置与 Magpie 插件状态。';
       const jobs=Array.isArray(s.pending)?s.pending:[];$('pending-count').textContent=String(jobs.length);$('completed').textContent=String(s.completed||0);
       $('status-error').textContent=s.error?'桥接遇到错误。请查看安全诊断及 T3 状态，确认后再继续。':'';$('jobs').replaceChildren();
       for(const job of jobs){const li=document.createElement('li');const label=document.createElement('strong');label.textContent=labelFor(phases,job.phase)||'未知阶段';const detail=document.createElement('p');detail.className='hint';detail.textContent=job.phase==='blocked'?'请在 T3 核对审批或回复；不要重复发送任务。':'请在对应 T3 线程查看任务详情。';li.append(label,detail);$('jobs').append(li);}
       $('empty').hidden=jobs.length>0;$('updated').textContent='更新于 '+new Date().toLocaleTimeString();
-    }catch(e){$('connection').textContent='状态读取失败';$('connection').dataset.kind='error';$('status-error').textContent=e.message;throw e;}
-    finally{refreshing=false;$('refresh').disabled=false;}
+    }catch(e){$('connection').textContent='状态读取失败';$('connection').dataset.kind='error';$('overview-title').textContent='暂时无法读取状态';$('overview-next').textContent='点击刷新重试，配置不会丢失。';$('status-error').textContent=e.message;throw e;}
+    finally{refreshing=false;$('refresh').disabled=false;busy('refresh',false);busy('runtime',false);}
   }
   $('refresh').onclick=()=>refresh().catch(()=>{});
-  let activeBinding=null,threadCursor=null,threadRequest=0,creatingThread=false,createReceipt=null,createTarget=null,createTargetUser='',qrTimer=null,qrObjectURL=null,qrActive=false,qrShownURL='',qrSaving=false;
+  let activeBinding=null,threadCursor=null,threadRequest=0,creatingThread=false,createReceipt=null,createTarget=null,createTargetUser='',createTargetThread='',createTargetEnvironment='',qrTimer=null,qrObjectURL=null,qrActive=false,qrShownURL='',qrSaving=false;
   function textNotice(id,text,kind=''){$(id).textContent=text;$(id).dataset.kind=kind;}
   function bindingInput(row,name){return [...row.querySelectorAll('input')].find(i=>i.name===name);}
-  $('discover-mcp').onclick=async()=>{
-    $('discover-mcp').disabled=true;textNotice('mcp-notice','正在读取 Magpie 中的服务…');$('mcp-results').replaceChildren();
+  async function discoverMCP(){
+    if(discovering)return;discovering=true;$('discover-mcp').disabled=true;busy('discover-mcp',true);busy('mcp-results',true);textNotice('mcp-notice','正在查找…');$('mcp-results').replaceChildren();
     try{const data=await api('api/mcp/servers');if(!Array.isArray(data.servers))throw new Error('当前服务不支持自动发现。请手动填写服务名称。');
-      for(const item of data.servers){if(typeof item.name!=='string'||!item.name)continue;const button=document.createElement('button');button.type='button';button.className='choice';const title=document.createElement('strong');title.textContent=item.name;const description=document.createElement('span');description.textContent=item.suggested?'可能是 T3 · 点击选择':'MCP 服务 · 点击选择';button.append(title,description);button.onclick=()=>{$('serverName').value=item.name;edited();textNotice('mcp-notice','已选择 '+item.name+'。下一步可读取会话确认授权。');};$('mcp-results').append(button);}
-      if(!$('mcp-results').children.length)textNotice('mcp-notice','没有发现可见服务。隐藏、未授权的服务可能不可发现，请手动填写名称。');else textNotice('mcp-notice','选择你的 T3 服务；列表中的其他 MCP 不能用于桥接。');
-    }catch(e){textNotice('mcp-notice',e.message+' 可继续手动配置。','error');}finally{$('discover-mcp').disabled=false;}
-  };
-  function openThreads(row,mode='existing'){if(creatingThread||createReceipt&&createTarget!==row){notice('正在创建或核对另一个绑定的会话，请先完成该请求。');return;}activeBinding=row;$('thread-picker').hidden=false;$('thread-existing').hidden=mode==='new';$('thread-new').hidden=mode!=='new';$('thread-picker-title').textContent=mode==='new'?'创建飞书 IM 专用工作区':'选择已有 T3 对话';$('thread-picker-description').textContent=mode==='new'?'确认后才创建目录，不会发送消息或启动任务。':'只读取标题与标识，不会发送消息或打开任务。';$('thread-environment').value=bindingInput(row,'environmentId').value;$('thread-results').replaceChildren();$('thread-more').hidden=true;threadCursor=null;textNotice('thread-notice','');$('thread-picker').scrollIntoView?.({block:'start',behavior:'auto'});if(mode==='existing')loadThreads(false);}
+      const servers=data.servers.filter(item=>typeof item.name==='string'&&item.name),relays=servers.filter(item=>item.relayMatched===true);
+      const preselect=!loadedServerName&&!serverTouched&&!$('serverName').value.trim()&&relays.length===1;
+      if(preselect){$('serverName').value=relays[0].name;edited();}
+      for(const item of servers){const button=document.createElement('button');button.type='button';button.className='choice';button.dataset.recommended=String(item.relayMatched===true);button.dataset.selected=String($('serverName').value===item.name);const title=document.createElement('strong');title.textContent=item.name;const description=document.createElement('span');description.textContent=item.relayMatched===true?'T3 Relay 匹配 · 未验证授权':item.suggested?'名称包含 T3 · 手动确认':'其他 MCP 服务';button.append(title,description);button.onclick=()=>{serverTouched=true;$('serverName').value=item.name;for(const c of $('mcp-results').children)c.dataset.selected=String(c===button);edited();textNotice('mcp-notice','已选择 '+item.name+'，尚未保存。');};$('mcp-results').append(button);}
+      textNotice('mcp-notice',!servers.length?'未找到服务。展开下方手动配置。':preselect?'已预选唯一 T3 Relay，尚未保存。':relays.length>1?'发现多个 T3 Relay，请选择要使用的服务。':$('serverName').value?'已保留当前选择，也可切换其他服务。':'选择 T3 服务，或展开手动配置。');
+    }catch(e){textNotice('mcp-notice',e.message+' 可继续手动配置。','error');}finally{discovering=false;$('discover-mcp').disabled=false;busy('discover-mcp',false);busy('mcp-results',false);}
+  }
+  $('discover-mcp').onclick=()=>discoverMCP();
+  function openThreads(row,mode='existing'){if(creatingThread||createReceipt&&createTarget!==row){notice('正在创建或核对另一个绑定的会话，请先完成该请求。');return;}activeBinding=row;$('thread-picker').hidden=false;$('thread-existing').hidden=mode==='new';$('thread-new').hidden=mode!=='new';$('thread-picker-title').textContent=mode==='new'?'创建飞书 IM 独立项目':'选择已有 T3 对话';$('thread-picker-description').textContent=mode==='new'?'确认后才创建目录，不会发送消息或启动任务。':'只读取标题与标识，不会发送消息或打开任务。';$('thread-environment').value=bindingInput(row,'environmentId').value;$('thread-results').replaceChildren();$('thread-more').hidden=true;threadCursor=null;textNotice('thread-notice','');$('thread-picker').scrollIntoView?.({block:'start',behavior:'auto'});if(mode==='existing')loadThreads(false);}
   $('thread-close').onclick=()=>{if(creatingThread){textNotice('thread-notice','正在创建会话，请等待结果后再关闭。');return;}activeBinding=null;$('thread-picker').hidden=true;threadRequest++;};
   async function loadThreads(more){
-    if(!activeBinding)return;const serverName=$('serverName').value.trim();if(!serverName){textNotice('thread-notice','请先选择或填写 T3 MCP 服务。','error');return;}const generation=++threadRequest;$('thread-search').disabled=true;$('thread-more').disabled=true;textNotice('thread-notice','正在读取 T3 会话…');if(!more)$('thread-results').replaceChildren();
+    if(!activeBinding)return;const serverName=$('serverName').value.trim();if(!serverName){textNotice('thread-notice','请先选择或填写 T3 MCP 服务。','error');return;}const generation=++threadRequest;$('thread-search').disabled=true;$('thread-more').disabled=true;textNotice('thread-notice','正在读取 T3 会话…');busy('thread-results',true);busy('thread-search',true);if(!more)$('thread-results').replaceChildren();
     try{const query=new URLSearchParams({serverName,environmentId:$('thread-environment').value.trim(),query:$('thread-query').value.trim(),cursor:more&&threadCursor!==null?String(threadCursor):'0'});const data=await api('api/t3/threads?'+query);if(generation!==threadRequest||!activeBinding)return;if(!Array.isArray(data.threads))throw new Error('会话列表格式不兼容，请使用手动 ID。');
       for(const t of data.threads){if(typeof t.threadId!=='string'||!t.threadId)continue;const button=document.createElement('button');button.type='button';button.className='choice';const title=document.createElement('strong');title.textContent=t.title||'未命名会话';const detail=document.createElement('span');detail.textContent=t.threadId+(t.environmentId?' · 远程环境':'');button.append(title,detail);button.onclick=()=>{if(!activeBinding)return;bindingInput(activeBinding,'threadId').value=t.threadId;bindingInput(activeBinding,'environmentId').value=typeof t.environmentId==='string'?t.environmentId:'';edited();textNotice('thread-notice','已选择会话。请核对用户绑定后继续。');$('thread-picker').hidden=true;activeBinding=null;};$('thread-results').append(button);}
       threadCursor=data.nextCursor??null;$('thread-more').hidden=threadCursor===null;textNotice('thread-notice',$('thread-results').children.length?'选择一个独立会话，避免与其他用户共用。':'没有找到会话。可调整搜索条件、手动填 ID，或明确新建专用会话。');
-    }catch(e){if(generation===threadRequest)textNotice('thread-notice',e.message+' 请确认 MCP 的登录和读取授权。','error');}finally{if(generation===threadRequest){$('thread-search').disabled=false;$('thread-more').disabled=false;}}
+    }catch(e){if(generation===threadRequest)textNotice('thread-notice',e.message+' 请确认 MCP 的登录和读取授权。','error');}finally{if(generation===threadRequest){$('thread-search').disabled=false;$('thread-more').disabled=false;busy('thread-results',false);busy('thread-search',false);}}
   }
   $('thread-search').onclick=()=>loadThreads(false);$('thread-more').onclick=()=>loadThreads(true);
+  $('thread-recover').onclick=async()=>{if(creatingThread||createReceipt||!activeBinding)return;const row=activeBinding,user=bindingInput(row,'userId').value.trim(),serverName=$('serverName').value.trim(),title=$('thread-title').value.trim(),environmentId=$('thread-environment').value.trim(),rowEnvironment=bindingInput(row,'environmentId').value.trim();if(!serverName||!title){textNotice('thread-notice','请先填写原服务、项目名称及环境。','error');return;}try{const r=await api('api/t3/pending?'+new URLSearchParams({serverName,title,environmentId}));if(activeBinding!==row||![...$('bindings').children].includes(row)||bindingInput(row,'userId').value.trim()!==user||bindingInput(row,'environmentId').value.trim()!==rowEnvironment||$('serverName').value.trim()!==serverName||$('thread-title').value.trim()!==title||$('thread-environment').value.trim()!==environmentId)return;if(!Array.isArray(r.requests)||r.requests.length!==1){textNotice('thread-notice','未找到唯一未完成请求，请核对原名称与环境；不要反复创建。','error');return;}createReceipt={serverName,title,environmentId,confirmCreate:true,requestId:r.requests[0].requestId};createTarget=row;createTargetUser=user;createTargetThread=bindingInput(row,'threadId').value.trim();createTargetEnvironment=rowEnvironment;textNotice('thread-notice','已加载原创建请求。核对当前用户绑定，勾选确认后点击创建以续办；不会重复创建项目。');}catch(e){textNotice('thread-notice',e.message,'error');}};
   $('thread-create').onclick=async()=>{
     if(creatingThread||!activeBinding)return;if(!$('thread-create-confirm').checked){textNotice('thread-notice','请先确认创建新的专用工作区。','error');return;}
-    if(!createReceipt){const serverName=$('serverName').value.trim(),title=$('thread-title').value.trim();if(!serverName||!title){textNotice('thread-notice','请填写 T3 服务和会话名称。','error');return;}createTarget=activeBinding;createTargetUser=bindingInput(activeBinding,'userId').value.trim();createReceipt={serverName,title,environmentId:$('thread-environment').value.trim(),confirmCreate:true,requestId:'im-'+Date.now().toString(36)+'-'+Math.random().toString(36).slice(2)};}
-    if(createTarget!==activeBinding||$('serverName').value.trim()!==createReceipt.serverName||$('thread-environment').value.trim()!==createReceipt.environmentId||$('thread-title').value.trim()!==createReceipt.title||bindingInput(createTarget,'userId').value.trim()!==createTargetUser){textNotice('thread-notice','创建请求的目标已变化。请先在 T3 核对原请求，并恢复原服务、环境、会话名称和用户后重试。','error');return;}
-    creatingThread=true;$('thread-create').disabled=true;textNotice('thread-notice','正在创建独立会话，不会启动模型…');
-    try{const t=await api('api/t3/create',createReceipt);if(typeof t.threadId!=='string'||!t.threadId)throw new Error('创建结果未确认，请先到 T3 核对，不要重复创建。');if($('serverName').value.trim()!==createReceipt.serverName||$('thread-environment').value.trim()!==createReceipt.environmentId||$('thread-title').value.trim()!==createReceipt.title||bindingInput(createTarget,'userId').value.trim()!==createTargetUser)throw new Error('会话已创建，但绑定目标在等待期间发生变化。请恢复原服务和用户后重试同一请求。');if(!createTarget||![...$('bindings').children].includes(createTarget))throw new Error('会话已创建，但原绑定已移除。请在 T3 核对并从会话列表选择，不要新建重复会话。');if(createTarget){bindingInput(createTarget,'threadId').value=t.threadId;bindingInput(createTarget,'environmentId').value=typeof t.environmentId==='string'?t.environmentId:'';for(const child of createTarget.children){if(child.className?.startsWith('workspace-create')){child.className='workspace-create';child.textContent='改绑到新的专用工作区';}}edited();}$('thread-picker').hidden=true;activeBinding=null;createReceipt=null;createTarget=null;$('thread-create-confirm').checked=false;notice('专用会话已创建并填入绑定；保存配置后才会用于飞书。','success');}
-    catch(e){textNotice('thread-notice',e.message+' 再次点击将重试同一创建请求；请先到 T3 核对。','error');}
+    if(!createReceipt){const serverName=$('serverName').value.trim(),title=$('thread-title').value.trim();if(!serverName||!title){textNotice('thread-notice','请填写 T3 服务和会话名称。','error');return;}createTarget=activeBinding;createTargetUser=bindingInput(activeBinding,'userId').value.trim();createTargetThread=bindingInput(activeBinding,'threadId').value.trim();createTargetEnvironment=bindingInput(activeBinding,'environmentId').value.trim();createReceipt={serverName,title,environmentId:$('thread-environment').value.trim(),confirmCreate:true,requestId:'im-'+Date.now().toString(36)+'-'+Math.random().toString(36).slice(2)};}
+    if(createTarget!==activeBinding||$('serverName').value.trim()!==createReceipt.serverName||$('thread-environment').value.trim()!==createReceipt.environmentId||$('thread-title').value.trim()!==createReceipt.title||bindingInput(createTarget,'userId').value.trim()!==createTargetUser||bindingInput(createTarget,'threadId').value.trim()!==createTargetThread||bindingInput(createTarget,'environmentId').value.trim()!==createTargetEnvironment){textNotice('thread-notice','创建请求的目标已变化。请先在 T3 核对原请求，并恢复原服务、环境、会话名称和用户后重试。','error');return;}
+    creatingThread=true;$('thread-create').disabled=true;textNotice('thread-notice','正在创建命名项目与会话，需要 Full Access，不会启动模型…');
+    try{const t=await api('api/t3/create',createReceipt);if(typeof t.threadId!=='string'||!t.threadId)throw new Error('创建结果未确认，请先到 T3 核对，不要重复创建。');if($('serverName').value.trim()!==createReceipt.serverName||$('thread-environment').value.trim()!==createReceipt.environmentId||$('thread-title').value.trim()!==createReceipt.title||bindingInput(createTarget,'userId').value.trim()!==createTargetUser||bindingInput(createTarget,'threadId').value.trim()!==createTargetThread||bindingInput(createTarget,'environmentId').value.trim()!==createTargetEnvironment)throw new Error('会话已创建，但绑定目标在等待期间发生变化。请恢复原服务和用户后重试同一请求。');if(!createTarget||![...$('bindings').children].includes(createTarget))throw new Error('会话已创建，但原绑定已移除。请在 T3 核对并从会话列表选择，不要新建重复会话。');if(createTarget){bindingInput(createTarget,'threadId').value=t.threadId;bindingInput(createTarget,'environmentId').value=typeof t.environmentId==='string'?t.environmentId:'';for(const child of createTarget.children){if(child.className?.startsWith('workspace-create')){child.className='workspace-create';child.textContent='改绑到新的专用工作区';}}edited();}$('thread-picker').hidden=true;activeBinding=null;createReceipt=null;createTarget=null;$('thread-create-confirm').checked=false;notice('独立项目与会话已创建，使用蓝色「飞」字标；保存配置后才会用于飞书。'+(t.commitWarning?' 注意：项目的首次 Git 提交有警告，请在 T3 检查仓库状态。':''),t.commitWarning?'warning':'success');}
+    catch(e){textNotice('thread-notice',e.message+' 再次点击只核验或续办同一创建请求，不会重新创建。若无法恢复，请先到 T3 核对；确认没有重复项目后可手动创建，再重新打开本页并选择已有会话。','error');}
     finally{creatingThread=false;$('thread-create').disabled=false;}
   };
   function releaseQR(){if(qrObjectURL){URL.revokeObjectURL(qrObjectURL);qrObjectURL=null;}clearTimeout(qrTimer);}
@@ -197,6 +205,7 @@
     if(name==='overview'){$('runtime').hidden=false;refresh().catch(()=>{});}
     if(name==='stats')loadStats();
   }
+  $('overview-settings').onclick=()=>showView('settings');
   for(const name of ['overview','stats','settings'])$('nav-'+name).onclick=()=>showView(name);
   const formatCount=n=>count(n).toLocaleString();
   const duration=n=>!Number.isFinite(n)||n<0?'—':n<1000?Math.round(n)+' 毫秒':n<60000?(n/1000).toFixed(1)+' 秒':(n/60000).toFixed(1)+' 分钟';
@@ -206,7 +215,7 @@
     const svg=svgNode('svg',{viewBox:'0 0 720 220',role:'presentation','aria-hidden':'true'}),max=Math.max(1,...days.flatMap(d=>[count(d.accepted),count(d.completed)])),left=34,right=700,top=14,bottom=184;
     for(let i=0;i<4;i++){const y=bottom-(bottom-top)*i/3;svg.append(svgNode('line',{x1:left,y1:y,x2:right,y2:y,class:'chart-grid'}));svg.append(svgNode('text',{x:26,y:y+4,'text-anchor':'end',class:'chart-label'},String(Math.round(max*i/3))));}
     const x=i=>days.length===1?(left+right)/2:left+(right-left)*i/(days.length-1),y=v=>bottom-(bottom-top)*count(v)/max;
-    for(const [key,cls]of [['accepted','chart-accepted'],['completed','chart-completed']]){const d=days.map((v,i)=>(i?'L':'M')+x(i).toFixed(1)+' '+y(v[key]).toFixed(1)).join(' ');svg.append(svgNode('path',{d,class:cls}));for(let i=0;i<days.length;i++){const dot=svgNode('circle',{cx:x(i),cy:y(days[i][key]),r:3,class:cls+'-dot'});dot.append(svgNode('title',{},days[i].date+' · '+(key==='accepted'?'接收':'投递完成')+' '+count(days[i][key])));svg.append(dot);}}
+    for(const [key,cls]of [['accepted','chart-accepted'],['completed','chart-completed']]){const d=days.map((v,i)=>(i?'L':'M')+x(i).toFixed(1)+' '+y(v[key]).toFixed(1)).join(' ');svg.append(svgNode('path',{d,class:cls,pathLength:1}));for(let i=0;i<days.length;i++){const dot=svgNode('circle',{cx:x(i),cy:y(days[i][key]),r:3,class:cls+'-dot'});dot.append(svgNode('title',{},days[i].date+' · '+(key==='accepted'?'接收':'投递完成')+' '+count(days[i][key])));svg.append(dot);}}
     const indexes=[0,Math.floor((days.length-1)/2),days.length-1];for(const i of [...new Set(indexes)])if(days[i])svg.append(svgNode('text',{x:x(i),y:210,'text-anchor':i===0?'start':i===days.length-1?'end':'middle',class:'chart-label'},days[i].date.slice(5)));
     host.append(svg);host.setAttribute('aria-label','近 '+days.length+' 天任务趋势。完整数值见下方每日数据表。');
   }
@@ -216,13 +225,13 @@
     for(const [key,label]of rows){const n=count(total[key]);if(!n)continue;const row=document.createElement('div');row.className='outcome-row';const caption=document.createElement('span');caption.textContent=label;const value=document.createElement('strong');value.textContent=formatCount(n);const bar=document.createElement('progress');bar.max=sum;bar.value=n;bar.setAttribute('aria-label',label+' '+n);row.append(caption,value,bar);host.append(row);}
   }
   async function loadStats(){
-    if(!/^[0-9a-f]{64}$/.test(token))return;const sequence=++statsSequence;statsLoading=true;$('stats-refresh').disabled=true;$('stats-notice').textContent='正在读取…';
+    if(!/^[0-9a-f]{64}$/.test(token))return;const sequence=++statsSequence;statsLoading=true;$('stats-refresh').disabled=true;$('stats-notice').textContent='正在读取…';$('stats-notice').dataset.kind='';busy('view-stats',true);busy('stats-refresh',true);
     for(const n of [7,30])$('range-'+n).setAttribute('aria-pressed',n===rangeDays?'true':'false');
     try{const data=await api('api/stats?days='+rangeDays);if(sequence!==statsSequence)return;if(data.version!==1||!Array.isArray(data.days))throw new Error('当前服务尚不支持统计，请更新插件并重新打开。');const days=data.days.filter(d=>/^\d{4}-\d{2}-\d{2}$/.test(d.date)).slice(-rangeDays);const total={};for(const d of days)for(const k of ['accepted','completed','blocked','latencyMs','latencyCount','runCompleted','runFailed','runCancelled','runInterrupted','runRolledBack'])total[k]=(total[k]||0)+count(d[k]);
       $('stats-accepted').textContent=formatCount(total.accepted);$('stats-delivered').textContent=formatCount(total.completed);$('stats-blocked').textContent=formatCount(total.blocked);$('stats-latency').textContent=total.latencyCount?duration(total.latencyMs/total.latencyCount):'—';
       $('stats-coverage').textContent='近 '+rangeDays+' 天 · 开始记录于 '+moment(data.startedAt)+' · 日聚合保留 '+count(data.retentionDays)+' 天';drawTrend(days);drawOutcomes(total);$('stats-table').replaceChildren();for(const d of days){const row=document.createElement('tr');for(const v of [d.date,formatCount(d.accepted),formatCount(d.completed),formatCount(d.blocked)]){const cell=document.createElement('td');cell.textContent=v;row.append(cell);}$('stats-table').append(row);}$('stats-notice').textContent='';
-    }catch(e){if(sequence===statsSequence){$('stats-notice').textContent=e.message;$('stats-notice').dataset.kind='error';}}
-    finally{if(sequence===statsSequence){statsLoading=false;$('stats-refresh').disabled=false;}}
+    }catch(e){if(sequence===statsSequence){$('stats-notice').textContent=e.message+' 如下方仍有数据，它来自上次成功读取，请以标注的日期范围为准。';$('stats-notice').dataset.kind='error';}}
+    finally{if(sequence===statsSequence){statsLoading=false;$('stats-refresh').disabled=false;busy('view-stats',false);busy('stats-refresh',false);}}
   }
   $('stats-refresh').onclick=()=>loadStats();for(const n of [7,30])$('range-'+n).onclick=()=>{rangeDays=n;loadStats();};
 
@@ -231,11 +240,11 @@
     const c={enabled:$('enabled').checked,appId:$('appId').value.trim(),appSecret:$('appSecret').value,serverName:$('serverName').value.trim(),bindings:readBindings()};
     try{validate(c);}catch(e){notice(e.message);return;}
     saving=true;fields.disabled=true;$('save').textContent='保存中…';notice('正在保存并应用配置…','');
-    try{await api('api/config',c);hasSecret=hasSecret||!!c.appSecret;loadedAppId=c.appId;$('appSecret').value='';$('appSecret').placeholder=hasSecret?'已保存，留空不变':'首次使用必填';dirty=false;$('dirty').textContent='已保存';notice(c.enabled?'配置已保存。请查看飞书连接，再发送一条私聊完成验证。':'配置已保存，桥接处于关闭状态。','success');showStep(3);showView('overview');await refresh().catch(()=>{});}
+    try{await api('api/config',c);hasSecret=hasSecret||!!c.appSecret;loadedAppId=c.appId;loadedServerName=c.serverName;$('appSecret').value='';$('appSecret').placeholder=hasSecret?'已保存，留空不变':'首次使用必填';dirty=false;$('dirty').textContent='已保存';notice(c.enabled?'配置已保存。请查看飞书连接，再发送一条私聊完成验证。':'配置已保存，桥接处于关闭状态。','success');showStep(3);showView('overview');await refresh().catch(()=>{});}
     catch(e){notice(e.message);}
     finally{saving=false;fields.disabled=false;$('save').textContent='保存并应用';}
   };
   if(!/^[0-9a-f]{64}$/.test(token)){notice('缺少有效控制密钥。请从 Magpie 插件页重新打开，不要直接访问此地址。');$('connection').textContent='未授权';$('refresh').disabled=true;return;}
-  try{const c=await api('api/config');$('enabled').checked=c.enabled;$('appId').value=c.appId;loadedAppId=c.appId;$('serverName').value=c.serverName;hasSecret=!!c.hasSecret;$('qr-replace-row').hidden=!hasSecret;$('appSecret').placeholder=hasSecret?'已保存，留空不变':'首次使用必填';for(const b of c.bindings)bindingRow(b);showStep(c.enabled?3:!c.appId&&!c.hasSecret&&!c.bindings.length?0:!c.serverName?0:!c.appId||!c.hasSecret?1:!c.bindings.length?2:3);fields.disabled=false;showView(c.enabled?'overview':'settings');await refresh().catch(()=>{});resumeQR();}
+  try{const c=await api('api/config');$('enabled').checked=c.enabled;$('appId').value=c.appId;loadedAppId=c.appId;$('serverName').value=c.serverName;loadedServerName=c.serverName;hasSecret=!!c.hasSecret;$('qr-replace-row').hidden=!hasSecret;$('appSecret').placeholder=hasSecret?'已保存，留空不变':'首次使用必填';for(const b of c.bindings)bindingRow(b);showStep(c.enabled?3:!c.appId&&!c.hasSecret&&!c.bindings.length?0:!c.serverName?0:!c.appId||!c.hasSecret?1:!c.bindings.length?2:3);fields.disabled=false;showView(c.enabled?'overview':'settings');await refresh().catch(()=>{});resumeQR();if(!loadedServerName)discoverMCP();}
   catch(e){notice(e.message);$('connection').textContent='配置读取失败';}
 })();
