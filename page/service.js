@@ -89,17 +89,51 @@
   showStep(0);
   const channelNames={idle:'未连接',reconnecting:'重新连接中',failed:'连接失败',connected:'已连接',connecting:'连接中',disconnected:'未连接',stopped:'已停止',unknown:'未知'};
   const phases={queued:'等待提交',waiting:'等待 T3',reading:'读取回复',delivering:'准备发送',accepted:'已接收',submitting:'提交中',submitted:'等待 T3',running:'执行中',ready:'待回复',sending:'发送中',uncertain:'需人工核对',blocked:'需人工处理',done:'已完成'};
+  const decisionNames={accepted:'已通过白名单，加入处理队列',unbound:'发信人未在白名单',duplicate:'重复消息已忽略',stale:'消息时间无效或已过期',invalid:'消息不完整或超过长度限制',notRunning:'桥接尚未运行'};
+  const filterNames={not_private:'非私聊',not_text:'非文字消息',not_user:'非用户发信人',invalid_content:'消息内容格式无效',missing_fields:'缺少必要消息字段'};
+  const operationNames={baseline:'读取线程起点',send:'提交消息',wait:'等待任务结束',read:'读取回复'};
+  const outcomeNames={pending:'处理中',success:'收到响应',error:'失败'};
+  const labelFor=(map,key)=>Object.hasOwn(map,key)?map[key]:undefined;
+  const count=v=>Number.isSafeInteger(v)&&v>=0?v:0;
+  const moment=v=>typeof v==='number'&&Number.isFinite(v)&&v>0&&v<=Date.now()+86400000?new Date(v).toLocaleString():'尚无记录';
+  function diagnose(s){
+    const d=s.diagnostics,c=d?.channel;
+    const safe={events:count(c?.events),normalized:count(c?.normalized),filtered:count(c?.filtered),accepted:count(d?.accepted),unbound:count(d?.unbound),duplicate:count(d?.duplicate),stale:count(d?.stale),invalid:count(d?.invalid),notRunning:count(d?.notRunning)};
+    $('diag-events').textContent=d?String(safe.events):'暂无数据';$('diag-accepted').textContent=d?String(safe.accepted):'暂无数据';
+    const t=d?.t3,op=labelFor(operationNames,t?.operation),outcome=labelFor(outcomeNames,t?.outcome);
+    $('diag-t3').textContent=op&&outcome?op+' · '+outcome:'尚未调用';
+    $('diag-decision').textContent='最近消息判断：'+(labelFor(decisionNames,d?.lastDecision)||'尚无记录');
+    let next;
+    if(!d)next='当前服务未提供消息诊断。请更新插件并重新打开页面；原有配置不会因此变更。';
+    else if(!s.enabled||!s.running)next='先启用并保存桥接，再发送一条新的私聊文字。';
+    else if(!safe.events)next='尚未收到 im.message.receive_v1 事件。检查飞书长连接事件订阅、私聊读取权限、应用发布与本人可用范围；连接成功不代表事件已经订阅。';
+    else if(d.lastDecision==='unbound')next='已收到消息，但发信人未获授权。回到「绑定自己」，核对 open_id 是否来自同一飞书应用；不会自动授权陌生用户。';
+    else if(d.lastDecision==='stale')next='该消息因时间被忽略。检查主机时间后发送一条新消息，不要重放旧消息。';
+    else if(d.lastDecision==='duplicate')next='这条消息已处理或已入队，不会重复执行。查看现有任务状态，不要反复发送相同任务。';
+    else if(d.lastDecision==='invalid')next='该消息缺少必要字段或过长。请改用一条简短的私聊文字。';
+    else if(d.lastDecision==='notRunning')next='消息到达时桥接未运行。重新确认启用状态，再发送一条新消息。';
+    else if(!safe.normalized)next='事件已到达，但不符合私聊文字要求。请直接私聊机器人，不要使用群聊、图片或卡片；过滤原因见下方。';
+    else if(t?.outcome==='error')next='消息已进入处理流程，T3 调用失败。检查 Magpie 中 MCP 服务名称与登录、发送授权、线程及远程环境；先到 T3 核对任务，不要重复发送。';
+    else if(safe.accepted)next='消息已通过白名单。查看下方任务状态和 T3 线程；需要审批时请回到 T3，只有本轮结束后才会回复飞书。';
+    else next='已收到事件。核对消息类型和白名单，再查看最近消息判断。';
+    $('diag-next').textContent=next;$('diag-filters').replaceChildren();
+    for(const [key,label] of Object.entries(filterNames)){const n=count(c?.filterReasons?.[key]);if(n){const li=document.createElement('li');li.textContent=label+'：'+n;$('diag-filters').append(li);}}
+    $('diag-time').textContent='最近事件：'+moment(c?.lastEventAt)+' · 最近白名单判断：'+moment(d?.lastReceivedAt);
+    // Whitelist the copied diagnostic surface. Never stringify raw status,
+    // pending jobs, remote errors, or unrecognized diagnostic keys.
+    $('status').textContent=JSON.stringify({enabled:s.enabled===true,running:s.running===true,...safe,lastDecision:labelFor(decisionNames,d?.lastDecision)||null,t3:op&&outcome?{operation:op,outcome}:null},null,2);
+  }
   async function refresh(){
     if(refreshing)return;refreshing=true;$('refresh').disabled=true;
     try{
-      const s=await api('api/status');$('status').textContent=JSON.stringify(s,null,2);
+      const s=await api('api/status');diagnose(s);
       const state=s.error?'需要关注':!s.enabled?'未启用':s.running?'桥接已启动':'未运行';
       $('connection').textContent=state;$('connection').dataset.kind=s.error?'error':s.running?'success':'';
       const channel=typeof s.channelConnection==='string'?s.channelConnection:s.channelConnection?.state;
-      $('channel').textContent=channelNames[channel]||channel||'—';
+      $('channel').textContent=labelFor(channelNames,channel)||'未知';
       const jobs=Array.isArray(s.pending)?s.pending:[];$('pending-count').textContent=String(jobs.length);$('completed').textContent=String(s.completed||0);
-      $('status-error').textContent=s.error||'';$('jobs').replaceChildren();
-      for(const job of jobs){const li=document.createElement('li');const label=document.createElement('strong');label.textContent=phases[job.phase]||job.phase;const detail=document.createElement('p');detail.className='hint';detail.textContent='线程 '+job.threadId+(job.reason?' · '+job.reason:'');li.append(label,detail);$('jobs').append(li);}
+      $('status-error').textContent=s.error?'桥接遇到错误。请查看安全诊断及 T3 状态，确认后再继续。':'';$('jobs').replaceChildren();
+      for(const job of jobs){const li=document.createElement('li');const label=document.createElement('strong');label.textContent=labelFor(phases,job.phase)||'未知阶段';const detail=document.createElement('p');detail.className='hint';detail.textContent=job.phase==='blocked'?'请在 T3 核对审批或回复；不要重复发送任务。':'请在对应 T3 线程查看任务详情。';li.append(label,detail);$('jobs').append(li);}
       $('empty').hidden=jobs.length>0;$('updated').textContent='更新于 '+new Date().toLocaleTimeString();
     }catch(e){$('connection').textContent='状态读取失败';$('connection').dataset.kind='error';$('status-error').textContent=e.message;throw e;}
     finally{refreshing=false;$('refresh').disabled=false;}
