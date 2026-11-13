@@ -14,6 +14,7 @@ export function decodeToolResult(r){
 export class T3Client {
   constructor(addr,name){this.url=proxyURL(addr,name);this.client=null;}
   async connect(){if(this.client)return; const client=new Client({name:'magpie-t3-feishu',version:'0.1.0'});await client.connect(new StreamableHTTPClientTransport(this.url));this.client=client;}
+  async tools(){await this.connect();const all=[];let cursor;do{const r=await this.client.listTools(cursor?{cursor}:{});all.push(...r.tools);cursor=r.nextCursor;if(all.length>2000)throw new Error('Too many tools');}while(cursor);return all;}
   async call(name,args){
     try{await this.connect();const r=await this.client.callTool({name,arguments:args},undefined,{timeout:40000});return decodeToolResult(r);
     }catch(e){await this.close();throw new Error('T3 MCP unavailable or incompatible; check Magpie OAuth and tool version');}
