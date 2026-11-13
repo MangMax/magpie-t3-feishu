@@ -3,7 +3,7 @@
   "type":"module","main":"./index.mjs","license":"MIT",
   "keywords":["magpie","magpie-plugin","t3code","feishu","mcp"],
   "files":["index.mjs","src","page","README.md","LICENSE"],
-  "scripts":{"test":"node --test","check":"node --check index.mjs && node --check src/service.mjs && node --check src/bridge.mjs"},
+  "scripts":{"test":"node --test","check":"node --check index.mjs && node --check src/service.mjs && node --check src/bridge.mjs && node --check page/app.js && node --check page/service.js"},
   "dependencies":{"@larksuiteoapi/node-sdk":"^1.56.0","@modelcontextprotocol/sdk":"^1.26.0","@opencode-ai/plugin":"^1.0.0"},
   "magpie":{"name":"T3 飞书桥","maxConcurrency":1,"page":{"title":"T3 飞书桥","file":"page/index.html","service":{"port":18991,"option":"port"}},"options":{"port":18991,"controlToken":""}}
 }
