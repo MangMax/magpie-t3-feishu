@@ -23,3 +23,9 @@ test('QR onboarding keeps secrets server-side and uses explicit minimal scope',a
 test('cancelled QR cannot save a late result',async()=>{let resolve,saved=false;const flow=new FeishuOnboarding({save:async()=>{saved=true;},register:()=>new Promise(r=>resolve=r)});flow.start();flow.cancel();resolve({client_id:'cli_1234567890abcdef',client_secret:'SECRET'});await flow.task;assert.equal(saved,false);assert.equal(flow.status().state,'cancelled');});
 
 test('QR save is explicit, noncancellable once committed, and failed write remains retryable',async()=>{let finish;const flow=new FeishuOnboarding({register:async()=>({client_id:'cli_1234567890abcdef',client_secret:'SECRET'}),save:async(r,current,commit)=>{assert.equal(current(),true);assert.equal(commit(),true);await new Promise(resolve=>finish=resolve);}});flow.start();await flow.task;assert.equal(flow.state.state,'authorized');const apply=flow.apply();assert.equal(flow.state.state,'saving');assert.equal(flow.cancel(),false);finish();await apply;assert.equal(flow.state.state,'complete');const failed=new FeishuOnboarding({register:async()=>({client_id:'cli_1234567890abcdef',client_secret:'SECRET'}),save:async()=>{throw new Error('disk failed');}});failed.start();await failed.task;await assert.rejects(()=>failed.apply());assert.equal(failed.state.state,'authorized');assert.doesNotMatch(JSON.stringify(failed.status()),/SECRET|disk failed/);});
+
+test('reading legacy inactive stats does not manufacture or persist a start time',()=>{
+ const state={jobs:[]},now=Date.parse('2026-11-13T05:00:00Z');
+ for(let i=0;i<2;i++){const result=statsSummary(state,now+i,30);assert.equal(result.coverageEstablished,false);assert.equal(result.startedAt,null);assert.equal(result.asOf,now+i);assert.equal(state.stats,undefined);}
+ ensureStats(state,now);const result=statsSummary(state,now+100,30);assert.equal(result.coverageEstablished,true);assert.equal(result.startedAt,now);
+});
