@@ -21,7 +21,7 @@
         (typeof opts.controlToken !== 'string' || !/^[0-9a-f]{64}$/.test(opts.controlToken))) {
       throw new Error('本地控制密钥格式无效，请检查插件选项。');
     }
-    button.textContent = opts.controlToken ? '打开设置' : '创建本地控制密钥';
+    button.textContent = opts.controlToken ? '进入配置向导' : '开始设置';
     button.disabled = false;
     button.onclick = async () => {
       button.disabled = true;
@@ -32,7 +32,7 @@
             ...opts,
             controlToken: Array.from(bytes, b => b.toString(16).padStart(2, '0')).join(''),
           });
-          status.textContent = '已保存。插件宿主正在重启，请关闭并重新打开本页。';
+          status.textContent = '本地初始化已完成。Magpie 插件宿主正在重启；请关闭并重新打开本页，再点击「进入配置向导」。';
           return;
         }
         let target = new URL(`http://127.0.0.1:${port}/`);
