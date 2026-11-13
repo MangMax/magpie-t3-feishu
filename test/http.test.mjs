@@ -13,7 +13,10 @@ test('Feishu normalization excludes groups and bot events',()=>{const base={send
 test('local control API bearer, CORS, private config and bad target',async()=>{const dir=await mkdtemp(join(tmpdir(),'bridge-http-'));process.env.MAGPIE_CONFIG_DIR=dir;const port=19991,token='a'.repeat(64);const service=await startService({}, {port,controlToken:token});const call=(path,headers={},method='GET',body)=>new Promise((resolve,reject)=>{const r=request({host:'127.0.0.1',port,path,method,headers},res=>{let data='';res.on('data',c=>data+=c);res.on('end',()=>resolve({status:res.statusCode,body:data,headers:res.headers}));});r.on('error',reject);r.end(body);});try{
 assert.equal((await call('/api/config')).status,401);
 const page=await call('/');assert.match(page.headers['content-security-policy'],/script-src 'self'/);assert.doesNotMatch(page.headers['content-security-policy'],/unsafe-inline/);
-for(const [path,mime] of [['/service.js','text/javascript'],['/ui.css','text/css']]){const a=await call(path);assert.equal(a.status,200);assert.ok(a.headers['content-type'].startsWith(mime));assert.equal(a.body.includes(token),false);}
+for(const [path,mime] of [['/service.js','text/javascript'],['/ui.css','text/css'],['/feishu.svg','image/svg+xml']]){const a=await call(path);assert.equal(a.status,200);assert.ok(a.headers['content-type'].startsWith(mime));assert.equal(a.body.includes(token),false);}
+const logo=await call('/feishu.svg');assert.match(logo.body,/<svg/);assert.equal(logo.headers['x-content-type-options'],'nosniff');
+assert.equal((await call('/feishu.svg',{origin:'https://evil.example'})).status,403);
+assert.equal((await call('/page/feishu.svg')).status,401);
 assert.equal((await call('/service.js',{origin:'https://evil.example'})).status,403);
 assert.equal((await call('/api/config',{authorization:'Bearer '+token,origin:'https://evil.example'})).status,403);
 assert.equal((await call('/api/config',{authorization:'Bearer '+token,host:'evil.example'})).status,403);

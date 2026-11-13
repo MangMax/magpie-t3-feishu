@@ -29,7 +29,7 @@ export async function startService(input,options,dependencies={}){
   async function withT3(name,fn){const client=new T3Client(process.env.MAGPIE_ADDR,serverName(name));try{return await fn(client);}finally{await client.close();}}
   async function bodyJSON(req){if(!String(req.headers['content-type']).startsWith('application/json'))throw new Error('JSON required');let body='';for await(const chunk of req){body+=chunk;if(body.length>32768)throw new Error('Body too large');}return JSON.parse(body);}
   const html=await readFile(new URL('../page/service.html',import.meta.url));
-  const assets=new Map(await Promise.all(['ui.css','service.js'].map(async name=>['/'+name,await readFile(new URL('../page/'+name,import.meta.url))])));
+  const assets=new Map(await Promise.all(Object.entries({'ui.css':'text/css; charset=utf-8','service.js':'text/javascript; charset=utf-8','feishu.svg':'image/svg+xml; charset=utf-8'}).map(async ([name,type])=>['/'+name,{type,body:await readFile(new URL('../page/'+name,import.meta.url))}])));
   const server=createServer(async(req,res)=>{
     const origin=req.headers.origin;
     if(![`127.0.0.1:${port}`,`localhost:${port}`].includes(req.headers.host)){res.writeHead(403).end();return;}
@@ -39,7 +39,7 @@ export async function startService(input,options,dependencies={}){
     if(req.method==='OPTIONS'){res.setHeader('Access-Control-Allow-Headers','authorization,content-type');res.setHeader('Access-Control-Allow-Methods','GET,POST');res.writeHead(204).end();return;}
     let path,url;try{url=new URL(req.url,'http://localhost');path=url.pathname;}catch{res.writeHead(400).end();return;}
     if(req.method==='GET'&&(path==='/'||path==='/index.html')){res.setHeader('Content-Type','text/html; charset=utf-8');res.setHeader('Content-Security-Policy',"default-src 'none'; script-src 'self' http://127.0.0.1:"+port+"; style-src 'self' http://127.0.0.1:"+port+"; connect-src 'self' http://127.0.0.1:"+port+"; img-src 'self' blob:; base-uri 'none'; form-action 'none'");res.end(html);return;}
-    if(req.method==='GET'&&assets.has(path)){res.setHeader('Content-Type',path.endsWith('.css')?'text/css; charset=utf-8':'text/javascript; charset=utf-8');res.end(assets.get(path));return;}
+    if(req.method==='GET'&&assets.has(path)){const asset=assets.get(path);res.setHeader('Content-Type',asset.type);res.end(asset.body);return;}
     if(!authorized(req.headers.authorization,token)){res.writeHead(401).end();return;}
     res.setHeader('Content-Type','application/json');
     try{

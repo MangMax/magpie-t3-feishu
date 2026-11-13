@@ -19,8 +19,10 @@ export function finishStats(state,job,now=Date.now()){
   if(job.phase==='done'){addStat(state,'latencyMs',Math.max(0,now-job.createdAt),now);addStat(state,'latencyCount',1,now);}
 }
 export function statsSummary(state,now=Date.now(),range=30){
-  const s=ensureStats(state,now),days=[];range=Math.min(90,Math.max(1,Math.floor(Number(range)||30)));
+  const coverageEstablished=!!state.stats;
+  // Reading statistics must not invent a recording start for an inactive/legacy bridge.
+  const s=state.stats||{startedAt:null,updatedAt:null,total:empty(),days:{}},days=[];range=Math.min(90,Math.max(1,Math.floor(Number(range)||30)));
   for(let i=range-1;i>=0;i--){const date=dayKey(now-i*86400000);days.push({date,...empty(),...s.days[date]});}
   const total={...empty(),...s.total};const inFlight=state.jobs.filter(j=>j.statsVersion===1&&!['done','blocked'].includes(j.phase)).length;
-  return {version:1,startedAt:s.startedAt,updatedAt:s.updatedAt,timeZone:'Asia/Shanghai',retentionDays:90,rangeDays:range,total,rangeTotal:days.reduce((a,d)=>{for(const k of KEYS)a[k]+=d[k];return a;},empty()),days,inFlight,averageLatencyMs:total.latencyCount?Math.round(total.latencyMs/total.latencyCount):null};
+  return {version:1,coverageEstablished,asOf:now,startedAt:s.startedAt,updatedAt:s.updatedAt,timeZone:'Asia/Shanghai',retentionDays:90,rangeDays:range,total,rangeTotal:days.reduce((a,d)=>{for(const k of KEYS)a[k]+=d[k];return a;},empty()),days,inFlight,averageLatencyMs:total.latencyCount?Math.round(total.latencyMs/total.latencyCount):null};
 }
