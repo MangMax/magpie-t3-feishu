@@ -18,7 +18,7 @@
       throw new Error('本地服务端口必须是 1024–65535 的整数，请检查插件选项。');
     }
     if (opts.controlToken !== undefined && opts.controlToken !== '' &&
-        (typeof opts.controlToken !== 'string' || !/^[0-9a-f]{64}$/i.test(opts.controlToken))) {
+        (typeof opts.controlToken !== 'string' || !/^[0-9a-f]{64}$/.test(opts.controlToken))) {
       throw new Error('本地控制密钥格式无效，请检查插件选项。');
     }
     button.textContent = opts.controlToken ? '打开设置' : '创建本地控制密钥';
