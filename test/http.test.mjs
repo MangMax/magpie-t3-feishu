@@ -12,6 +12,9 @@ test('MCP proxy only accepts loopback, encodes names',()=>{assert.equal(proxyURL
 test('Feishu normalization excludes groups and bot events',()=>{const base={sender:{sender_type:'user',sender_id:{open_id:'ou_x'}},message:{chat_type:'p2p',message_type:'text',message_id:'m',chat_id:'c',create_time:'123',content:'{"text":"hello"}'}};assert.equal(normalizeEvent(base).text,'hello');assert.equal(normalizeEvent({...base,message:{...base.message,chat_type:'group'}}),null);assert.equal(normalizeEvent({...base,sender:{sender_type:'app'}}),null);});
 test('local control API bearer, CORS, private config and bad target',async()=>{const dir=await mkdtemp(join(tmpdir(),'bridge-http-'));process.env.MAGPIE_CONFIG_DIR=dir;const port=19991,token='a'.repeat(64);const service=await startService({}, {port,controlToken:token});const call=(path,headers={},method='GET',body)=>new Promise((resolve,reject)=>{const r=request({host:'127.0.0.1',port,path,method,headers},res=>{let data='';res.on('data',c=>data+=c);res.on('end',()=>resolve({status:res.statusCode,body:data,headers:res.headers}));});r.on('error',reject);r.end(body);});try{
 assert.equal((await call('/api/config')).status,401);
+const page=await call('/');assert.match(page.headers['content-security-policy'],/script-src 'self'/);assert.doesNotMatch(page.headers['content-security-policy'],/unsafe-inline/);
+for(const [path,mime] of [['/service.js','text/javascript'],['/ui.css','text/css']]){const a=await call(path);assert.equal(a.status,200);assert.ok(a.headers['content-type'].startsWith(mime));assert.equal(a.body.includes(token),false);}
+assert.equal((await call('/service.js',{origin:'https://evil.example'})).status,403);
 assert.equal((await call('/api/config',{authorization:'Bearer '+token,origin:'https://evil.example'})).status,403);
 assert.equal((await call('/api/config',{authorization:'Bearer '+token,host:'evil.example'})).status,403);
 assert.equal((await call('//[%')).status,400);
