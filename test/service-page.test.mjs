@@ -14,11 +14,11 @@ class Element {
  remove(){this.parent.children=this.parent.children.filter(c=>c!==this);}
  focus(){}
 }
-function setup({token='a'.repeat(64),fail=false,failSave=false,configOverride={},statusOverride={},routes={}}={}){
+function setup({token='a'.repeat(64),fail=false,failSave=false,configOverride={},statusOverride={},routes={},reducedMotion=false}={}){
  const elements=new Map(),root=new Element(),listeners={},posts=[],calls=[];let saved;
  const parent={postMessage:m=>posts.push(m)};
  const config={enabled:false,appId:'',hasSecret:false,serverName:'t3',bindings:[],...configOverride};
- const context=vm.createContext({parent,window:{},document:{documentElement:root,getElementById:id=>{if(!elements.has(id))elements.set(id,new Element());return elements.get(id);},createElement:tag=>{const e=new Element();e.tag=tag;return e;},createElementNS:(_,tag)=>{const e=new Element();e.tag=tag;return e;}},
+ const context=vm.createContext({parent,window:{matchMedia:()=>({matches:reducedMotion})},document:{documentElement:root,getElementById:id=>{if(!elements.has(id))elements.set(id,new Element());return elements.get(id);},createElement:tag=>{const e=new Element();e.tag=tag;return e;},createElementNS:(_,tag)=>{const e=new Element();e.tag=tag;return e;}},
  location:{hash:'#'+token,href:'http://127.0.0.1:19991/',pathname:'/',search:''},history:{replaceState:()=>{}},URL,URLSearchParams,AbortController,Date,setTimeout,clearTimeout,
  addEventListener:(name,fn)=>listeners[name]=fn,
  fetch:async(url,o)=>{calls.push({url:String(url),o});if(routes[url.pathname])return {ok:true,json:async()=>typeof routes[url.pathname]==='function'?routes[url.pathname](url,o):routes[url.pathname]};if(fail)throw Error('offline');if(o.method==='POST'){if(failSave)throw Error('save offline');saved=JSON.parse(o.body);return {ok:true,json:async()=>({ok:true})};}return {ok:true,json:async()=>url.pathname==='/api/config'?config:{enabled:false,running:false,channelConnection:{state:'reconnecting',reconnectAttempts:2},completed:2,pending:[],...statusOverride}};}});
@@ -221,8 +221,9 @@ test('tab layout uses a keyboard-accessible stable scrollport and motion-free fa
  assert.match(css,/@keyframes page-fade-in\{from\{opacity:0\}to\{opacity:1\}\}/);
  assert.match(css,/@media\(prefers-reduced-motion:reduce\)\{\.service-shell \.view-stack[^\n]+animation:none!important/);
  assert.doesNotMatch(code,/window\.scrollTo|window\.scroll\(/);
- // Existing wizard and picker focus/scroll targeting remain inside the settings scrollport.
- assert.match(code,/scrollIntoView\?\.\(\{block:'start',behavior:'auto'\}\)/);
+ // Wizard focus no longer scrolls the parent/host during switching.
+ assert.match(code,/focus\(\{preventScroll:true\}\)/);
+ assert.doesNotMatch(code,/\$\('step-'\+n\)\.scrollIntoView/);
 });
 
 
@@ -248,4 +249,40 @@ test('inactive legacy statistics never claim measured zeroes or a recording star
 test('today is marked partial even when recording began before this range',async()=>{
  const s=setup({routes:{'/api/stats':{version:1,startedAt:Date.parse('2026-11-01T00:00:00Z'),asOf:Date.parse('2026-11-13T05:00:00Z'),days:[{date:'2026-11-12',accepted:0},{date:'2026-11-13',accepted:0}]}}});await s.run();s.get('nav-stats').onclick();await new Promise(setImmediate);
  assert.equal(s.get('stats-accepted').textContent,'0');assert.match(s.get('stats-coverage').textContent,/今日尚未结束，部分覆盖/);assert.equal(s.get('stats-table').children[0].children[0].textContent,'2026-11-12');assert.equal(s.get('stats-table').children[1].children[0].textContent,'2026-11-13（部分覆盖）');
+});
+
+test('shared navigation indicator and keyboard selection follow interrupted changes',async()=>{
+ const s=setup();await s.run();let prevented=0;
+ s.get('nav-settings').onkeydown({key:'Home',preventDefault(){prevented++;}});
+ assert.equal(s.get('product-nav').dataset.view,'overview');
+ assert.equal(s.get('nav-overview')['aria-selected'],'true');assert.equal(s.get('nav-stats').tabIndex,-1);
+ s.get('nav-overview').onkeydown({key:'ArrowLeft',preventDefault(){prevented++;}});
+ assert.equal(s.get('product-nav').dataset.view,'settings');assert.equal(s.get('view-overview').inert,true);
+ assert.equal(prevented,2);
+ s.get('step-tab-2').onclick();assert.equal(s.get('step-nav').dataset.step,'2');
+ const html=await readFile(new URL('../page/service.html',import.meta.url),'utf8');
+ assert.equal((html.match(/class="tab-indicator"/g)||[]).length,1);
+ assert.equal((html.match(/class="step-indicator"/g)||[]).length,1);
+});
+test('pane entry motion cancels previous animation and respects reduced motion',async()=>{
+ const s=setup();await s.run();let cancelled=0,animated=0;
+ s.get('view-overview').getAnimations=()=>[{cancel(){cancelled++;}}];
+ s.get('view-overview').animate=(frames,options)=>{animated++;assert.equal(options.duration,220);assert.equal(frames[0].opacity,0);};
+ s.get('nav-overview').onclick();s.get('nav-settings').onclick();s.get('nav-overview').onclick();
+ assert.equal(animated,2);assert.ok(cancelled>=3);
+ const reduced=setup({reducedMotion:true});await reduced.run();let reducedAnimations=0;reduced.get('view-overview').animate=()=>reducedAnimations++;reduced.get('nav-overview').onclick();assert.equal(reducedAnimations,0);
+ const css=await readFile(new URL('../page/ui.css',import.meta.url),'utf8');
+ assert.match(css,/transition:transform .28s/);assert.match(css,/position:absolute;inset:0;margin:0;animation:none/);
+ assert.match(code,/prefers-reduced-motion: reduce/);
+});
+
+test('programmatic navigation rescues focus only from the outgoing pane',async()=>{
+ const s=setup();await s.run();let overviewFocus=0,settingsFocus=0;
+ s.get('nav-overview').focus=options=>{overviewFocus++;assert.equal(options.preventScroll,true);};
+ s.get('nav-settings').focus=()=>settingsFocus++;
+ s.get('view-settings').contains=()=>true;
+ s.get('nav-overview').onclick();assert.equal(overviewFocus,1);
+ s.get('nav-overview').onclick();assert.equal(overviewFocus,1);
+ s.get('view-overview').contains=()=>false;
+ s.get('nav-settings').onclick();assert.equal(settingsFocus,0);
 });
