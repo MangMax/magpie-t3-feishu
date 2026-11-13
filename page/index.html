@@ -1,5 +1,5 @@
 <!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>T3 飞书桥</title><link rel="stylesheet" href="ui.css"></head>
-<body><main><header><h1>T3 飞书桥</h1><p class="muted">在飞书私聊中使用已有的 T3 Code 线程。</p></header>
-<section class="section"><div class="section-head"><h2>连接到本地服务</h2></div><div class="section-body"><p>复用 Magpie 已连接的 T3 MCP，通过飞书长连接收发文字，无需公网入口。</p><ol class="steps"><li>首次使用时创建本机控制密钥，然后重新打开插件页。</li><li>填写飞书应用凭据与 T3 MCP 名称。</li><li>添加可信用户和线程绑定，再启用桥接。</li></ol><div class="actions"><button class="primary" id="open" disabled>准备中…</button></div><p id="status" class="notice" role="status" aria-live="polite"></p></div></section>
+<body><main class="setup"><header><p class="eyebrow">MAGPIE · 飞书渠道</p><h1>在飞书里，继续 T3 的任务</h1><p class="muted">在飞书私聊中使用已有的 T3 Code 线程。</p></header>
+<section class="section"><div class="section-head"><h2>先准备好你的本地桥接</h2></div><div class="section-body"><p>复用 Magpie 已连接的 T3 MCP，通过飞书长连接收发文字，无需公网入口。</p><ol class="steps"><li>点击下方按钮完成一次本地初始化。控制密钥会自动生成，你不用复制或填写。</li><li>按提示重新打开页面，进入四步配置向导。</li><li>跟随引导连接 T3、配置飞书、绑定自己，再发一条私聊试用。</li></ol><div class="actions"><button class="primary" id="open" disabled>准备中…</button></div><p id="status" class="notice" role="status" aria-live="polite"></p></div></section>
 <footer>仅白名单私聊文字 · 不创建新线程 · 不代批执行权限</footer></main><script src="_magpie/bridge.js"></script><script src="app.js"></script></body></html>
