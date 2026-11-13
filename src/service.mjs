@@ -22,6 +22,7 @@ export async function startService(input,options){
     if(config.enabled){try{bridge=new Bridge({store,config,t3:new T3Client(process.env.MAGPIE_ADDR,config.serverName),channel:new FeishuChannel(config)});await bridge.start();}catch{startupError='启动失败：请核对飞书凭据、长连接订阅和 Magpie MCP 连接。';}}
   }
   const html=await readFile(new URL('../page/service.html',import.meta.url));
+  const assets=new Map(await Promise.all(['ui.css','service.js'].map(async name=>['/'+name,await readFile(new URL('../page/'+name,import.meta.url))])));
   const server=createServer(async(req,res)=>{
     const origin=req.headers.origin;
     if(![`127.0.0.1:${port}`,`localhost:${port}`].includes(req.headers.host)){res.writeHead(403).end();return;}
@@ -30,7 +31,8 @@ export async function startService(input,options){
     res.setHeader('Cache-Control','no-store');res.setHeader('Referrer-Policy','no-referrer');res.setHeader('X-Content-Type-Options','nosniff');
     if(req.method==='OPTIONS'){res.setHeader('Access-Control-Allow-Headers','authorization,content-type');res.setHeader('Access-Control-Allow-Methods','GET,POST');res.writeHead(204).end();return;}
     let path;try{path=new URL(req.url,'http://localhost').pathname;}catch{res.writeHead(400).end();return;}
-    if(req.method==='GET'&&(path==='/'||path==='/index.html')){res.setHeader('Content-Type','text/html; charset=utf-8');res.setHeader('Content-Security-Policy',"default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self' http://127.0.0.1:"+port+"; base-uri 'none'; form-action 'none'");res.end(html);return;}
+    if(req.method==='GET'&&(path==='/'||path==='/index.html')){res.setHeader('Content-Type','text/html; charset=utf-8');res.setHeader('Content-Security-Policy',"default-src 'none'; script-src 'self' http://127.0.0.1:"+port+"; style-src 'self' http://127.0.0.1:"+port+"; connect-src 'self' http://127.0.0.1:"+port+"; base-uri 'none'; form-action 'none'");res.end(html);return;}
+    if(req.method==='GET'&&assets.has(path)){res.setHeader('Content-Type',path.endsWith('.css')?'text/css; charset=utf-8':'text/javascript; charset=utf-8');res.end(assets.get(path));return;}
     if(!authorized(req.headers.authorization,token)){res.writeHead(401).end();return;}
     res.setHeader('Content-Type','application/json');
     try{
