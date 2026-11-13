@@ -14,14 +14,14 @@ class Element {
  remove(){this.parent.children=this.parent.children.filter(c=>c!==this);}
  focus(){}
 }
-function setup({token='a'.repeat(64),fail=false,failSave=false,configOverride={}}={}){
+function setup({token='a'.repeat(64),fail=false,failSave=false,configOverride={},statusOverride={}}={}){
  const elements=new Map(),root=new Element(),listeners={},posts=[],calls=[];let saved;
  const parent={postMessage:m=>posts.push(m)};
  const config={enabled:false,appId:'',hasSecret:false,serverName:'t3',bindings:[],...configOverride};
  const context=vm.createContext({parent,window:{},document:{documentElement:root,getElementById:id=>{if(!elements.has(id))elements.set(id,new Element());return elements.get(id);},createElement:tag=>{const e=new Element();e.tag=tag;return e;}},
  location:{hash:'#'+token,href:'http://127.0.0.1:19991/',pathname:'/',search:''},history:{replaceState:()=>{}},URL,AbortController,Date,setTimeout,clearTimeout,
  addEventListener:(name,fn)=>listeners[name]=fn,
- fetch:async(url,o)=>{calls.push({url:String(url),o});if(fail)throw Error('offline');if(o.method==='POST'){if(failSave)throw Error('save offline');saved=JSON.parse(o.body);return {ok:true,json:async()=>({ok:true})};}return {ok:true,json:async()=>url.pathname==='/api/config'?config:{enabled:false,running:false,channelConnection:{state:'reconnecting',reconnectAttempts:2},completed:2,pending:[]}};}});
+ fetch:async(url,o)=>{calls.push({url:String(url),o});if(fail)throw Error('offline');if(o.method==='POST'){if(failSave)throw Error('save offline');saved=JSON.parse(o.body);return {ok:true,json:async()=>({ok:true})};}return {ok:true,json:async()=>url.pathname==='/api/config'?config:{enabled:false,running:false,channelConnection:{state:'reconnecting',reconnectAttempts:2},completed:2,pending:[],...statusOverride}};}});
  return {elements,root,listeners,posts,parent,calls,get saved(){return saved;},run:()=>vm.runInContext(code,context),get:id=>elements.get(id)};
 }
 test('service page uses only external assets and official token styles',async()=>{
@@ -85,4 +85,24 @@ test('jumping directly to final step cannot bypass MCP URL validation',async()=>
 
 test('changing app requires matching replacement secret before saving',async()=>{
  const s=setup({configOverride:{appId:'cli_0123456789abcdef',hasSecret:true}});await s.run();s.get('step-tab-3').onclick();s.get('appId').value='cli_1111111111111111';const before=s.calls.length;await s.get('form').onsubmit({preventDefault(){}});assert.equal(s.calls.length,before);assert.match(s.get('notice').textContent,/更换 App ID/);
+});
+
+test('message diagnostics identify subscription, allowlist and T3 stages',async()=>{
+ for(const [diagnostics,expected] of [
+  [{channel:{events:0}},/事件订阅/],
+  [{channel:{events:1,normalized:1},unbound:1,lastDecision:'unbound'},/未获授权/],
+  [{channel:{events:1,normalized:0,filtered:1,filterReasons:{not_text:1}}},/不符合私聊文字/],
+  [{channel:{events:1,normalized:1},accepted:1,lastDecision:'accepted',t3:{operation:'send',outcome:'error'}},/T3 调用失败/],
+  [{channel:{events:1,normalized:1},accepted:1,lastDecision:'accepted',t3:{operation:'wait',outcome:'pending'}},/已通过白名单/]
+ ]){const s=setup({statusOverride:{enabled:true,running:true,diagnostics}});await s.run();assert.match(s.get('diag-next').textContent,expected);}
+});
+test('diagnostic surface excludes payloads, IDs, tokens and unknown fields',async()=>{
+ const secret='PRIVATE-MARKER';const s=setup({statusOverride:{enabled:true,running:true,error:secret,pending:[{id:secret,threadId:secret,phase:'blocked',reason:secret}],diagnostics:{accepted:1,lastDecision:secret,token:secret,message:secret,t3:{operation:secret,outcome:secret},channel:{events:1,normalized:1,filterReasons:{[secret]:10},lastEventAt:secret}}}});await s.run();
+ for(const id of ['status','status-error','diag-next','diag-decision','diag-time','diag-t3'])assert.ok(!s.get(id).textContent.includes(secret));
+ const texts=e=>[e.textContent,...e.children.flatMap(texts)].join(' ');assert.ok(!texts(s.get('jobs')).includes(secret));assert.ok(!texts(s.get('diag-filters')).includes(secret));assert.equal(s.get('diag-t3').textContent,'尚未调用');
+});
+
+test('received T3 response is not presented as validated operation success',async()=>{
+ const s=setup({statusOverride:{enabled:true,running:true,diagnostics:{channel:{events:1,normalized:1},accepted:1,lastDecision:'accepted',t3:{operation:'send',outcome:'success'}}}});await s.run();assert.equal(s.get('diag-t3').textContent,'提交消息 · 收到响应');assert.doesNotMatch(s.get('diag-t3').textContent,/成功/);
+ const html=await readFile(new URL('../page/service.html',import.meta.url),'utf8');assert.match(html,/不代表任务执行或回复投递成功/);
 });
