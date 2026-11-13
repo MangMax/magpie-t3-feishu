@@ -33,6 +33,32 @@
   form.addEventListener('input',edited);
   $('serverName').addEventListener('input',()=>{serverTouched=true;});
   function busy(id,on){$(id).setAttribute('aria-busy',String(on));$(id).dataset.loading=String(on);}
+  // Unknown data gets skeletons; a refresh never erases the last verified result.
+  let runtimeReady=false,statsReady=false;
+  const numberMotions=new Map();
+  const motionAllowed=()=>!document.hidden&&!window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+  function settleNumbers(){for(const item of numberMotions.values()){window.cancelAnimationFrame?.(item.frame);item.node.textContent=item.format(item.target);item.node.dataset.value=String(item.target);}numberMotions.clear();}
+  addEventListener('visibilitychange',()=>{if(document.hidden)settleNumbers();});
+  addEventListener('pagehide',settleNumbers);
+  function numberValue(id,value,format=String,pane='stats'){
+    const node=$(id),prior=numberMotions.get(id);if(prior)window.cancelAnimationFrame?.(prior.frame);
+    numberMotions.delete(id);
+    const from=Number(node.dataset.value),known=node.dataset.value!==undefined&&Number.isFinite(from);
+    if(value===null||!Number.isFinite(value)){delete node.dataset.value;node.textContent='—';node.setAttribute('aria-label','暂无数据');return;}
+    node.setAttribute('aria-label',format(value));
+    // First observations are revealed, never counted up from a fabricated zero.
+    if(!known||from===value||view!==pane||!motionAllowed()||!window.requestAnimationFrame){node.textContent=format(value);node.dataset.value=String(value);return;}
+    const item={node,target:value,format,frame:null,start:null};numberMotions.set(id,item);
+    const tick=time=>{
+      if(numberMotions.get(id)!==item)return;
+      if(!motionAllowed()||view!==pane){node.textContent=format(value);node.dataset.value=String(value);numberMotions.delete(id);return;}
+      if(item.start===null)item.start=time;
+      const progress=Math.min(1,(time-item.start)/360),current=from+(value-from)*(1-Math.pow(1-progress,3));
+      node.textContent=format(current);node.dataset.value=String(current);
+      if(progress<1)item.frame=window.requestAnimationFrame(tick);else{node.textContent=format(value);node.dataset.value=String(value);numberMotions.delete(id);}
+    };item.frame=window.requestAnimationFrame(tick);
+  }
+  function regionState(id,state){$(id).dataset.loadState=state;}
   async function api(path,body) {
     const controller=new AbortController();requests.add(controller);
     const timer=setTimeout(()=>controller.abort(),15000);
@@ -135,7 +161,7 @@
     $('status').textContent=JSON.stringify({enabled:s.enabled===true,running:s.running===true,...safe,lastDecision:labelFor(decisionNames,d?.lastDecision)||null,t3:op&&outcome?{operation:op,outcome}:null},null,2);
   }
   async function refresh(){
-    if(refreshing)return;refreshing=true;$('refresh').disabled=true;busy('refresh',true);busy('runtime',true);
+    if(refreshing)return;regionState('view-overview',runtimeReady?'refreshing':'initial');refreshing=true;$('refresh').disabled=true;busy('refresh',true);busy('runtime',true);
     try{
       const s=await api('api/status');diagnose(s);
       const state=s.error?'需要关注':!s.enabled?'未启用':s.running?'桥接已启动':'未运行';
@@ -143,11 +169,11 @@
       const channel=typeof s.channelConnection==='string'?s.channelConnection:s.channelConnection?.state;
       $('channel').textContent=labelFor(channelNames,channel)||'未知';
       $('overview-title').textContent=s.error?'连接需要关注':!s.enabled?'准备好开始了吗？':s.running?'桥接已启动':'桥接暂未运行';$('overview-next').textContent=s.error?'展开诊断，查看消息停在哪一步。':!s.enabled?'完成连接设置，再发出第一条私聊。':s.running?'给飞书机器人发一条私聊，继续你的 T3 任务。':'检查连接设置与 Magpie 插件状态。';
-      const jobs=Array.isArray(s.pending)?s.pending:[];$('pending-count').textContent=String(jobs.length);$('completed').textContent=String(s.completed||0);
+      const jobs=Array.isArray(s.pending)?s.pending:[];numberValue('pending-count',jobs.length,n=>String(Math.round(n)),'overview');numberValue('completed',count(s.completed),n=>String(Math.round(n)),'overview');
       $('status-error').textContent=s.error?'桥接遇到错误。请查看安全诊断及 T3 状态，确认后再继续。':'';$('jobs').replaceChildren();
       for(const job of jobs){const li=document.createElement('li');const label=document.createElement('strong');label.textContent=labelFor(phases,job.phase)||'未知阶段';const detail=document.createElement('p');detail.className='hint';detail.textContent=job.phase==='blocked'?'请在 T3 核对审批或回复；不要重复发送任务。':'请在对应 T3 线程查看任务详情。';li.append(label,detail);$('jobs').append(li);}
-      $('empty').hidden=jobs.length>0;$('updated').textContent='更新于 '+new Date().toLocaleTimeString();
-    }catch(e){$('connection').textContent='状态读取失败';$('connection').dataset.kind='error';$('overview-title').textContent='暂时无法读取状态';$('overview-next').textContent='点击刷新重试，配置不会丢失。';$('status-error').textContent=e.message;throw e;}
+      runtimeReady=true;regionState('view-overview','ready');$('empty').hidden=jobs.length>0;$('updated').textContent='更新于 '+new Date().toLocaleTimeString();
+    }catch(e){regionState('view-overview',runtimeReady?'stale':'error');$('connection').textContent='状态读取失败';$('connection').dataset.kind='error';$('overview-title').textContent='暂时无法读取状态';$('overview-next').textContent='点击刷新重试，配置不会丢失。';$('status-error').textContent=e.message;throw e;}
     finally{refreshing=false;$('refresh').disabled=false;busy('refresh',false);busy('runtime',false);}
   }
   $('refresh').onclick=()=>refresh().catch(()=>{});
@@ -206,13 +232,14 @@
   async function resumeQR(){try{const data=await api('api/onboarding/feishu');if(['waiting','authorized','saving'].includes(data.state)){qrActive=true;$('qr-start').disabled=true;$('qr-cancel').hidden=false;checkQR();}}catch{/* Optional state recovery does not block manual setup. */}}
   $('qr-refresh').onclick=()=>{qrActive=true;return checkQR();};$('qr-apply').onclick=async()=>{if(createReceipt){textNotice('qr-notice','请先核对尚未完成的 T3 创建请求，再替换机器人。','error');return;}if(qrSaving||$('qr-apply').disabled)return;if(hasSecret&&!$('qr-replace').checked){textNotice('qr-notice','替换前请明确确认暂停原桥接并清空原绑定。','error');return;}$('qr-apply').disabled=true;try{await api('api/onboarding/feishu/apply',{confirmReplace:true});qrActive=true;await checkQR();}catch(e){textNotice('qr-notice',e.message+' 请检查状态后再继续。','error');qrActive=true;await checkQR();}finally{if(!qrSaving)$('qr-apply').disabled=false;}};$('qr-cancel').onclick=async()=>{try{const cancelled=await api('api/onboarding/feishu/cancel',{});if(cancelled.ok===false&&cancelled.state==='saving'){textNotice('qr-notice','正在保存配置，此时无法取消。请等待完成后核对。');return;}qrActive=false;releaseQR();$('qr-panel').hidden=true;$('qr-cancel').hidden=true;$('qr-apply').hidden=true;$('qr-start').disabled=false;textNotice('qr-notice','已取消本次接入。');}catch(e){textNotice('qr-notice',e.message,'error');}};
 
-  let view='settings',rangeDays=7,statsLoading=false,statsSequence=0;
+  let view='settings',rangeDays=7,displayedRange=7,statsLoading=false,statsSequence=0;
   const viewScroll=new Map();
   function showView(name){
     if(!['overview','stats','settings'].includes(name))return;
     const changed=view!==name;
     const moveFocus=changed&&$('view-'+view).contains?.(document.activeElement);
     viewScroll.set(view,$('view-'+view).scrollTop||0);
+    if(changed)settleNumbers();
     view=name;$('product-nav').dataset.view=name;
     for(const n of ['overview','stats','settings']){
       const active=n===name,pane=$('view-'+n),tab=$('nav-'+n);
@@ -244,7 +271,9 @@
   const formatCount=n=>count(n).toLocaleString();
   const duration=n=>!Number.isFinite(n)||n<0?'—':n<1000?Math.round(n)+' 毫秒':n<60000?(n/1000).toFixed(1)+' 秒':(n/60000).toFixed(1)+' 分钟';
   function svgNode(tag,attrs={},text){const node=document.createElementNS('http://www.w3.org/2000/svg',tag);for(const [k,v]of Object.entries(attrs))node.setAttribute(k,String(v));if(text!==undefined)node.textContent=text;return node;}
+  let trendSignature='',outcomeSignature='';
   function drawTrend(days){
+    const signature=JSON.stringify(days);if(signature===trendSignature)return;trendSignature=signature;
     const host=$('trend-chart');host.replaceChildren();const hasData=days.some(d=>count(d.accepted)||count(d.completed)||count(d.blocked));$('trend-empty').hidden=hasData;host.hidden=!hasData;
     const svg=svgNode('svg',{viewBox:'0 0 720 220',role:'presentation','aria-hidden':'true'}),max=Math.max(1,...days.flatMap(d=>[count(d.accepted),count(d.completed)])),left=34,right=700,top=14,bottom=184;
     for(let i=0;i<4;i++){const y=bottom-(bottom-top)*i/3;svg.append(svgNode('line',{x1:left,y1:y,x2:right,y2:y,class:'chart-grid'}));svg.append(svgNode('text',{x:26,y:y+4,'text-anchor':'end',class:'chart-label'},String(Math.round(max*i/3))));}
@@ -254,12 +283,13 @@
     host.append(svg);host.setAttribute('aria-label','近 '+days.length+' 天任务趋势。完整数值见下方每日数据表。');
   }
   function drawOutcomes(total){
+    const signature=JSON.stringify(total);if(signature===outcomeSignature)return;outcomeSignature=signature;
     const host=$('outcome-chart');host.replaceChildren();const rows=[['runCompleted','T3 已完成'],['runFailed','T3 失败'],['runCancelled','已取消'],['runInterrupted','已中断'],['runRolledBack','已回滚']];const sum=rows.reduce((a,[k])=>a+count(total[k]),0);
     if(!sum){const p=document.createElement('p');p.className='empty';p.textContent='尚无 T3 结束状态记录。';host.append(p);return;}
     for(const [key,label]of rows){const n=count(total[key]);if(!n)continue;const row=document.createElement('div');row.className='outcome-row';const caption=document.createElement('span');caption.textContent=label;const value=document.createElement('strong');value.textContent=formatCount(n);const bar=document.createElement('progress');bar.max=sum;bar.value=n;bar.setAttribute('aria-label',label+' '+n);row.append(caption,value,bar);host.append(row);}
   }
   async function loadStats(){
-    if(!/^[0-9a-f]{64}$/.test(token))return;const sequence=++statsSequence;statsLoading=true;$('stats-refresh').disabled=true;$('stats-notice').textContent='正在读取…';$('stats-notice').dataset.kind='';busy('view-stats',true);busy('stats-refresh',true);
+    if(!/^[0-9a-f]{64}$/.test(token))return;const sequence=++statsSequence;statsLoading=true;regionState('view-stats',statsReady?'refreshing':'initial');$('stats-refresh').disabled=true;busy('view-stats',true);busy('stats-refresh',true);
     for(const n of [7,30])$('range-'+n).setAttribute('aria-pressed',n===rangeDays?'true':'false');
     try{const data=await api('api/stats?days='+rangeDays);if(sequence!==statsSequence)return;if(data.version!==1||!Array.isArray(data.days))throw new Error('当前服务尚不支持统计，请更新插件并重新打开。');const validStart=typeof data.startedAt==='number'&&Number.isFinite(data.startedAt)&&data.startedAt>0&&data.startedAt<8.64e15-28800000;
       if(!validStart&&data.days.length&&data.coverageEstablished!==false)throw new Error('缺少可信的统计开始时间，暂不展示历史数据。');
@@ -268,9 +298,9 @@
       // The API zero-fills its requested range, including dates before telemetry existed.
       // Those dates are unknown, not recorded zeroes: exclude them from every display.
       const days=data.days.filter(d=>/^\d{4}-\d{2}-\d{2}$/.test(d.date)&&startDay&&d.date>=startDay&&d.date<=today).slice(-rangeDays);const total={};for(const d of days)for(const k of ['accepted','completed','blocked','latencyMs','latencyCount','runCompleted','runFailed','runCancelled','runInterrupted','runRolledBack'])total[k]=(total[k]||0)+count(d[k]);
-      $('stats-accepted').textContent=formatCount(total.accepted);$('stats-delivered').textContent=formatCount(total.completed);$('stats-blocked').textContent=formatCount(total.blocked);$('stats-latency').textContent=total.latencyCount?duration(total.latencyMs/total.latencyCount):'—';
-      $('stats-coverage').textContent=days.length?'近 '+rangeDays+' 天内实际覆盖：'+days[0].date+(days.length>1?' 至 '+days[days.length-1].date:'')+'（北京时间）'+(days.some(d=>d.date===startDay)?' · 起始日仅从 '+new Date(data.startedAt).toLocaleTimeString('zh-CN',{timeZone:'Asia/Shanghai',hour12:false})+' 开始记录，部分覆盖':'')+(days.some(d=>d.date===today)?' · 今日尚未结束，部分覆盖':'')+' · 开始记录前无数据，不按 0 计':data.coverageEstablished===false?'尚未开始统计':'尚无已覆盖日期'+(startDay?' · 开始记录于 '+startDay+'（北京时间）':' · 统计开始时间未知');if(!days.length){for(const id of ['stats-accepted','stats-delivered','stats-blocked'])$(id).textContent='—';}drawTrend(days);drawOutcomes(total);$('stats-table').replaceChildren();for(const d of days){const row=document.createElement('tr');for(const v of [d.date+(d.date===startDay||d.date===today?'（部分覆盖）':''),formatCount(d.accepted),formatCount(d.completed),formatCount(d.blocked)]){const cell=document.createElement('td');cell.textContent=v;row.append(cell);}$('stats-table').append(row);}$('stats-notice').textContent='';
-    }catch(e){if(sequence===statsSequence){$('stats-notice').textContent=e.message+' 如下方仍有数据，它来自上次成功读取，请以标注的日期范围为准。';$('stats-notice').dataset.kind='error';}}
+      for(const [id,key]of [['stats-accepted','accepted'],['stats-delivered','completed'],['stats-blocked','blocked']])numberValue(id,days.length?count(total[key]):null,n=>Math.round(n).toLocaleString());numberValue('stats-latency',total.latencyCount?total.latencyMs/total.latencyCount:null,duration);
+      $('stats-coverage').textContent=days.length?'近 '+rangeDays+' 天内实际覆盖：'+days[0].date+(days.length>1?' 至 '+days[days.length-1].date:'')+'（北京时间）'+(days.some(d=>d.date===startDay)?' · 起始日仅从 '+new Date(data.startedAt).toLocaleTimeString('zh-CN',{timeZone:'Asia/Shanghai',hour12:false})+' 开始记录，部分覆盖':'')+(days.some(d=>d.date===today)?' · 今日尚未结束，部分覆盖':'')+' · 开始记录前无数据，不按 0 计':data.coverageEstablished===false?'尚未开始统计':'尚无已覆盖日期'+(startDay?' · 开始记录于 '+startDay+'（北京时间）':' · 统计开始时间未知');drawTrend(days);drawOutcomes(total);$('stats-table').replaceChildren();for(const d of days){const row=document.createElement('tr');for(const v of [d.date+(d.date===startDay||d.date===today?'（部分覆盖）':''),formatCount(d.accepted),formatCount(d.completed),formatCount(d.blocked)]){const cell=document.createElement('td');cell.textContent=v;row.append(cell);}$('stats-table').append(row);}$('stats-notice').textContent='';$('stats-notice').dataset.kind='';statsReady=true;displayedRange=rangeDays;regionState('view-stats','ready');
+    }catch(e){if(sequence===statsSequence){regionState('view-stats',statsReady?'stale':'error');if(statsReady){rangeDays=displayedRange;for(const n of [7,30])$('range-'+n).setAttribute('aria-pressed',String(n===displayedRange));}$('stats-notice').textContent=e.message+(statsReady?' 当前保留上次成功读取的数据。':' 请重试。');$('stats-notice').dataset.kind='error';}}
     finally{if(sequence===statsSequence){statsLoading=false;$('stats-refresh').disabled=false;busy('view-stats',false);busy('stats-refresh',false);}}
   }
   $('stats-refresh').onclick=()=>loadStats();for(const n of [7,30])$('range-'+n).onclick=()=>{rangeDays=n;loadStats();};

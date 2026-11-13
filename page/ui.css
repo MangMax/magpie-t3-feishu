@@ -53,3 +53,29 @@ a{color:var(--magpie-accent,LinkText);text-underline-offset:3px}.setup{max-width
 
 /* Refresh status must not push summary cards when text appears/disappears. */
 #stats-notice{display:block;min-height:1.7em;margin-top:12px}
+
+/* Data states: unknown → skeleton → verified content. Refresh keeps verified content still. */
+#stats-refresh,#refresh{position:relative;padding-right:34px;min-width:108px;transition:color .18s,border-color .18s,background .18s}
+.product #stats-refresh::after,.product #refresh::after{content:'';position:absolute;right:12px;top:50%;margin:-5px 0 0;width:10px;height:10px;border:1.5px solid currentColor;border-right-color:transparent;border-radius:50%;opacity:0;transition:opacity .18s;animation:busy-turn .7s linear infinite;animation-play-state:paused}
+.product #stats-refresh[aria-busy=true]::after,.product #refresh[aria-busy=true]::after{opacity:1;animation-play-state:running}
+.product #stats-refresh:disabled,.product #refresh:disabled{opacity:1;color:var(--magpie-muted,GrayText)}
+.product [data-loading=true] .metric dd,.product [data-loading=true] .stat-grid dd,.product [data-loading=true] .chart,.product [aria-busy=true] .empty-state{opacity:1}
+.stat-grid dd,.metric dd{font-variant-numeric:tabular-nums;min-height:1.45em;position:relative}
+#stats-coverage{min-height:3.3em;margin:12px 0 0}
+#stats-notice{transition:color .2s,opacity .2s;min-height:1.7em}
+#stats-notice:empty{opacity:0}
+#trend-chart,#trend-empty{min-height:220px}
+#outcome-chart{min-height:110px}
+#view-stats .stat-grid dd::after,#view-overview .metric dd::after,#overview-title::after,#stats-coverage::after,#trend-chart::after,#outcome-chart::after{content:'';position:absolute;inset:0;pointer-events:none;border-radius:6px;background:linear-gradient(100deg,var(--magpie-line,ButtonBorder) 10%,var(--magpie-accent-soft,ButtonFace) 45%,var(--magpie-line,ButtonBorder) 80%);background-size:220% 100%;opacity:0;transition:opacity .24s ease;animation:skeleton-pass 1.8s ease-in-out infinite;animation-play-state:paused}
+#overview-title,#stats-coverage,#trend-chart,#outcome-chart{position:relative}
+#view-stats[data-load-state=initial] .stat-grid dd,#view-overview[data-load-state=initial] .metric dd,#view-overview[data-load-state=initial] #overview-title{color:transparent}
+#view-stats[data-load-state=initial] .stat-grid dd::after,#view-overview[data-load-state=initial] .metric dd::after,#view-overview[data-load-state=initial] #overview-title::after,#view-stats[data-load-state=initial] #stats-coverage::after,#view-stats[data-load-state=initial] #trend-chart::after,#view-stats[data-load-state=initial] #outcome-chart::after{opacity:1;animation-play-state:running}
+#view-stats .stat-grid dd::after,#view-overview .metric dd::after{right:28%;top:12%;bottom:12%}
+#stats-coverage::after{right:30%;bottom:55%}
+#view-stats[data-load-state=initial] #trend-chart{display:block}
+#view-stats[data-load-state=initial] #trend-empty,#view-stats[data-load-state=error] #trend-empty{display:none}
+#view-stats[data-load-state=initial] #outcome-chart>*,#view-stats[data-load-state=initial] #stats-table,#view-overview[data-load-state=initial] #empty{visibility:hidden}
+
+@media(prefers-reduced-motion:reduce){.product *, .product *::before,.product *::after{animation:none!important;transition:none!important}}
+
+#overview-next{min-height:1.65em}#overview-title{min-width:180px}
