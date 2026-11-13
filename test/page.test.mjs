@@ -41,7 +41,7 @@ test('missing bridge, rejected options and stalled handshake render actionable f
   }
 });
 test('rejects malformed control tokens and ports without navigation',async()=>{
-  for (const opts of [{controlToken:'short'},{controlToken:null},{controlToken:123},{port:'18991'},{port:'18991@evil.example'},{port:1023},{port:65536},{port:3.14}]) {
+  for (const opts of [{controlToken:'A'.repeat(64)},{controlToken:'short'},{controlToken:null},{controlToken:123},{port:'18991'},{port:'18991@evil.example'},{port:1023},{port:65536},{port:3.14}]) {
     const s=setup({ready:Promise.resolve(),options:{get:async()=>opts}});
     await s.run();assert.equal(s.button.textContent,'初始化失败');assert.equal(s.context.destination,undefined);
   }
