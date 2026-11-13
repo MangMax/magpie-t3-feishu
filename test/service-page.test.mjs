@@ -14,15 +14,16 @@ class Element {
  remove(){this.parent.children=this.parent.children.filter(c=>c!==this);}
  focus(){}
 }
-function setup({token='a'.repeat(64),fail=false,failSave=false,configOverride={},statusOverride={},routes={},reducedMotion=false}={}){
+function setup({token='a'.repeat(64),fail=false,failSave=false,configOverride={},statusOverride={},routes={},reducedMotion=false,animationClock=false}={}){
+ const frames=new Map();let frameId=0;
  const elements=new Map(),root=new Element(),listeners={},posts=[],calls=[];let saved;
  const parent={postMessage:m=>posts.push(m)};
  const config={enabled:false,appId:'',hasSecret:false,serverName:'t3',bindings:[],...configOverride};
- const context=vm.createContext({parent,window:{matchMedia:()=>({matches:reducedMotion})},document:{documentElement:root,getElementById:id=>{if(!elements.has(id))elements.set(id,new Element());return elements.get(id);},createElement:tag=>{const e=new Element();e.tag=tag;return e;},createElementNS:(_,tag)=>{const e=new Element();e.tag=tag;return e;}},
+ const context=vm.createContext({parent,window:{matchMedia:()=>({matches:reducedMotion}),...(animationClock?{requestAnimationFrame:fn=>{frames.set(++frameId,fn);return frameId;},cancelAnimationFrame:id=>frames.delete(id)}:{})},document:{documentElement:root,getElementById:id=>{if(!elements.has(id))elements.set(id,new Element());return elements.get(id);},createElement:tag=>{const e=new Element();e.tag=tag;return e;},createElementNS:(_,tag)=>{const e=new Element();e.tag=tag;return e;}},
  location:{hash:'#'+token,href:'http://127.0.0.1:19991/',pathname:'/',search:''},history:{replaceState:()=>{}},URL,URLSearchParams,AbortController,Date,setTimeout,clearTimeout,
- addEventListener:(name,fn)=>listeners[name]=fn,
+ addEventListener:(name,fn)=>{const previous=listeners[name];listeners[name]=previous?event=>{previous(event);fn(event);}:fn;},
  fetch:async(url,o)=>{calls.push({url:String(url),o});if(routes[url.pathname])return {ok:true,json:async()=>typeof routes[url.pathname]==='function'?routes[url.pathname](url,o):routes[url.pathname]};if(fail)throw Error('offline');if(o.method==='POST'){if(failSave)throw Error('save offline');saved=JSON.parse(o.body);return {ok:true,json:async()=>({ok:true})};}return {ok:true,json:async()=>url.pathname==='/api/config'?config:{enabled:false,running:false,channelConnection:{state:'reconnecting',reconnectAttempts:2},completed:2,pending:[],...statusOverride}};}});
- return {elements,root,listeners,posts,parent,calls,get saved(){return saved;},run:()=>vm.runInContext(code,context),get:id=>{if(!elements.has(id))elements.set(id,new Element());return elements.get(id);}};
+ return {elements,root,listeners,posts,parent,calls,frames,frame(time){const pending=[...frames.values()];frames.clear();for(const fn of pending)fn(time);},get saved(){return saved;},run:()=>vm.runInContext(code,context),get:id=>{if(!elements.has(id))elements.set(id,new Element());return elements.get(id);}};
 }
 test('service page uses only external assets and official token styles',async()=>{
  const html=await readFile(new URL('../page/service.html',import.meta.url),'utf8');
@@ -285,4 +286,37 @@ test('programmatic navigation rescues focus only from the outgoing pane',async()
  s.get('nav-overview').onclick();assert.equal(overviewFocus,1);
  s.get('view-overview').contains=()=>false;
  s.get('nav-settings').onclick();assert.equal(settingsFocus,0);
+});
+
+const statSample=(accepted=4)=>({version:1,startedAt:Date.parse('2026-11-13T00:00:00Z'),asOf:Date.parse('2026-11-13T08:00:00Z'),days:[{date:'2026-11-13',accepted,completed:2,blocked:0,latencyCount:1,latencyMs:2000}]});
+test('first statistics read uses unknown skeleton; refresh retains values and reports stale errors',async()=>{
+ let answer;const s=setup({routes:{'/api/stats':()=>new Promise((resolve,reject)=>answer={resolve,reject})}});await s.run();
+ s.get('nav-stats').onclick();await new Promise(setImmediate);
+ assert.equal(s.get('view-stats').dataset.loadState,'initial');assert.doesNotMatch(s.get('stats-notice').textContent,/正在读取/);
+ answer.resolve(statSample());await new Promise(setImmediate);assert.equal(s.get('view-stats').dataset.loadState,'ready');assert.equal(s.get('stats-accepted').textContent,'4');
+ const next=s.get('stats-refresh').onclick();await new Promise(setImmediate);assert.equal(s.get('view-stats').dataset.loadState,'refreshing');assert.equal(s.get('stats-accepted').textContent,'4');
+ answer.reject(Error('offline'));await next;assert.equal(s.get('view-stats').dataset.loadState,'stale');assert.equal(s.get('stats-accepted').textContent,'4');assert.match(s.get('stats-notice').textContent,/上次成功/);assert.equal(s.get('stats-refresh').disabled,false);
+});
+test('out-of-order range reads cannot replace a newer result or end its loading state',async()=>{
+ const replies=[];const s=setup({routes:{'/api/stats':()=>new Promise(resolve=>replies.push(resolve))}});await s.run();s.get('nav-stats').onclick();await new Promise(setImmediate);s.get('range-30').onclick();await new Promise(setImmediate);
+ replies[0](statSample(99));await new Promise(setImmediate);assert.equal(s.get('view-stats').dataset.loadState,'initial');assert.equal(s.get('stats-refresh').disabled,true);
+ replies[1](statSample(7));await new Promise(setImmediate);assert.equal(s.get('stats-accepted').textContent,'7');assert.equal(s.get('view-stats').dataset.loadState,'ready');
+});
+test('number motion starts at verified values and cancels on supersession, unknown values and tab exit',async()=>{
+ let data=statSample(4);const s=setup({animationClock:true,routes:{'/api/stats':()=>data}});await s.run();s.get('nav-stats').onclick();await new Promise(setImmediate);assert.equal(s.get('stats-accepted').textContent,'4');assert.equal(s.frames.size,0);
+ data=statSample(40);await s.get('stats-refresh').onclick();s.frame(0);s.frame(180);assert.equal(s.get('stats-accepted').textContent,'36');assert.equal(s.get('stats-accepted')['aria-label'],'40');
+ data=statSample(12);await s.get('stats-refresh').onclick();s.frame(200);s.frame(560);assert.equal(s.get('stats-accepted').textContent,'12');assert.equal(s.frames.size,0);
+ data=statSample(80);await s.get('stats-refresh').onclick();data={version:1,coverageEstablished:false,days:[]};await s.get('stats-refresh').onclick();s.frame(1000);assert.equal(s.get('stats-accepted').textContent,'—');assert.equal(s.frames.size,0);
+ data=statSample(4);await s.get('stats-refresh').onclick();data=statSample(8);await s.get('stats-refresh').onclick();s.get('nav-settings').onclick();assert.equal(s.frames.size,0);assert.equal(s.get('stats-accepted').textContent,'8');
+});
+test('reduced motion uses final numbers and identical data preserves charts',async()=>{
+ let data=statSample(2);const s=setup({animationClock:true,reducedMotion:true,routes:{'/api/stats':()=>data}});await s.run();s.get('nav-stats').onclick();await new Promise(setImmediate);const chart=s.get('trend-chart').children[0];await s.get('stats-refresh').onclick();assert.equal(s.get('trend-chart').children[0],chart);
+ data=statSample(6);await s.get('stats-refresh').onclick();assert.equal(s.frames.size,0);assert.equal(s.get('stats-accepted').textContent,'6');
+});
+
+test('pagehide settles pending number motion without later callbacks',async()=>{
+ let data=statSample(2);const s=setup({animationClock:true,routes:{'/api/stats':()=>data}});await s.run();s.get('nav-stats').onclick();await new Promise(setImmediate);data=statSample(10);await s.get('stats-refresh').onclick();assert.ok(s.frames.size);s.listeners.pagehide();assert.equal(s.frames.size,0);assert.equal(s.get('stats-accepted').textContent,'10');
+});
+test('first read failure is not represented as a successful empty dataset',async()=>{
+ const s=setup({routes:{'/api/stats':()=>{throw Error('offline');}}});await s.run();s.get('nav-stats').onclick();await new Promise(setImmediate);assert.equal(s.get('view-stats').dataset.loadState,'error');assert.match(s.get('stats-notice').textContent,/请重试/);assert.equal(s.get('view-stats')['aria-busy'],'false');
 });
