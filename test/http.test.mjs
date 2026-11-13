@@ -1,0 +1,20 @@
+import {test} from 'node:test';
+import assert from 'node:assert/strict';
+import {request} from 'node:http';
+import {mkdtemp,rm} from 'node:fs/promises';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
+import {authorized,startService} from '../src/service.mjs';
+import {proxyURL} from '../src/mcp.mjs';
+import {normalizeEvent} from '../src/channels/feishu.mjs';
+test('constant-time authentication handles Unicode without throwing',()=>{assert.equal(authorized('Bearer '+'é'.repeat(64),'a'.repeat(64)),false);assert.equal(authorized('Bearer '+'a'.repeat(64),'a'.repeat(64)),true);});
+test('MCP proxy only accepts loopback, encodes names',()=>{assert.equal(proxyURL('localhost:1234','a/b').pathname,'/mcp/a%2Fb');assert.throws(()=>proxyURL('evil.example:1234','a'));assert.throws(()=>proxyURL('localhost:1@evil.example','a'));});
+test('Feishu normalization excludes groups and bot events',()=>{const base={sender:{sender_type:'user',sender_id:{open_id:'ou_x'}},message:{chat_type:'p2p',message_type:'text',message_id:'m',chat_id:'c',create_time:'123',content:'{"text":"hello"}'}};assert.equal(normalizeEvent(base).text,'hello');assert.equal(normalizeEvent({...base,message:{...base.message,chat_type:'group'}}),null);assert.equal(normalizeEvent({...base,sender:{sender_type:'app'}}),null);});
+test('local control API bearer, CORS, private config and bad target',async()=>{const dir=await mkdtemp(join(tmpdir(),'bridge-http-'));process.env.MAGPIE_CONFIG_DIR=dir;const port=19991,token='a'.repeat(64);const service=await startService({}, {port,controlToken:token});const call=(path,headers={},method='GET',body)=>new Promise((resolve,reject)=>{const r=request({host:'127.0.0.1',port,path,method,headers},res=>{let data='';res.on('data',c=>data+=c);res.on('end',()=>resolve({status:res.statusCode,body:data,headers:res.headers}));});r.on('error',reject);r.end(body);});try{
+assert.equal((await call('/api/config')).status,401);
+assert.equal((await call('/api/config',{authorization:'Bearer '+token,origin:'https://evil.example'})).status,403);
+assert.equal((await call('/api/config',{authorization:'Bearer '+token,host:'evil.example'})).status,403);
+assert.equal((await call('//[%')).status,400);
+const auth={authorization:'Bearer '+token,origin:'null'};const config=await call('/api/config',auth);assert.equal(config.status,200);assert.equal('appSecret' in JSON.parse(config.body),false);assert.equal(config.headers['access-control-allow-origin'],'null');
+const saved=await call('/api/config',{...auth,'content-type':'application/json'},'POST',JSON.stringify({enabled:false,appId:'test',appSecret:'DO_NOT_LEAK',serverName:'t3',bindings:[]}));assert.equal(saved.status,200);assert.equal((await call('/api/config',auth)).body.includes('DO_NOT_LEAK'),false);
+}finally{await new Promise(r=>service.server.close(r));await rm(dir,{recursive:true,force:true});delete process.env.MAGPIE_CONFIG_DIR;}});
